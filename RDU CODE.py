@@ -10,8 +10,6 @@ from typing import Optional
 import discord
 from discord.ext import commands
 from discord import app_commands, utils, VoiceClient
-import discord.sinks as sinks
-
 
 # --- CONFIGURATION ---
 
@@ -25,7 +23,7 @@ if not DISCORD_TOKEN:
 BOT_NAME = "RUST DOWN UNDER"
 DESCRIPTION = "A Discord bot for the RUST DOWN UNDER community"
 LOG_CHANNEL_NAME = "bot-logs" 
-ADMIN_ID = 123456789012345678 # Placeholder for your Admin User ID 
+ADMIN_ID = 123456789012345678 # <<< Kept for reference but not used by /sync >>>
 
 # --- LOGGING SETUP ---
 
@@ -85,58 +83,19 @@ def parse_duration(duration_str: str) -> Optional[timedelta]:
 
 # --- VOICE RECORDING CALLBACK ---
 
-async def finished_recording_callback(sink: sinks.WaveSink, text_channel: discord.TextChannel, *args):
-    """
-    Called when a voice recording is stopped. Sends the recorded audio files.
-    This provides the multi-track (Craig-style) output.
-    """
-    vc: VoiceClient = sink.vc
-    guild = vc.guild
-    
-    # 1. Disconnect and clean up
-    await vc.disconnect()
-    if guild.id in voice_clients:
-        del voice_clients[guild.id]
-        
-    # 2. Prepare files for sending (one file per speaker/user)
-    files = []
-    recorded_users = []
-    
-    for user_id, audio in sink.audio_data.items():
-        user = bot.get_user(user_id)
-        display_name = user.display_name if user else f"unknown_user_{user_id}"
-        file_name = f"{display_name.replace(' ', '_')}_{user_id}.{sink.encoding}"
-        files.append(discord.File(audio.file, filename=file_name))
-        recorded_users.append(user.mention if user else f"User ID `{user_id}`")
-
-    # 3. Send confirmation and the files
-    user_list = ", ".join(recorded_users)
-    embed = discord.Embed(
-        title="🎙️ Recording Finished!",
-        description=f"**Recorded Speakers:** {user_list}\n*You should receive one file per speaker for multi-track editing.*",
-        color=discord.Color.dark_teal()
-    )
-    await text_channel.send(embed=embed, files=files)
-    
-    # 4. Log the event
-    log_embed = discord.Embed(
-        title="🔊 Voice Recording Completed", 
-        description=f"Recording finished in voice channel: `{vc.channel.name}`.\nSpeakers: {len(recorded_users)}", 
-        color=discord.Color.dark_teal()
-    )
-    await send_log_embed(guild, log_embed)
-
+# finished_recording_callback function REMOVED to fix NameError: 'sinks' is not defined
 
 # --- EVENTS ---
 
 @bot.event
 async def on_ready():
     logger.info(f'{bot.user} has connected to Discord!')
+    # We do NOT sync here to avoid rate limits, it relies on the /sync command.
     try:
         synced = await bot.tree.sync()
-        logger.info(f"Synced {len(synced)} slash commands.")
+        logger.info(f"Successfully synced {len(synced)} slash commands on startup.")
     except Exception as e:
-        logger.error(f"Failed to sync commands: {e}")
+        logger.error(f"Failed to sync commands on startup: {e}")
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
@@ -179,22 +138,35 @@ async def help_command(interaction: discord.Interaction):
 
     CORE_COMMANDS = {
         "ping", "userinfo", "serverinfo", "uptime", "wipe", "status", "map", 
-        "rules", "kick", "tempmute", "join", "stop", "leave", "sync" 
+        "rules", "kick", "tempmute", "sync" 
     }
+    
+    # NOTE: The "join", "stop", "leave" commands were removed from CORE_COMMANDS as their functions no longer exist.
 
     allowed_commands = []
+    member = interaction.user
+    
     for command in bot.tree.walk_commands():
         if command.name not in CORE_COMMANDS:
             continue
             
         is_allowed = True
-        if hasattr(command, '_checks') and command._checks:
+        
+        # --- STABILIZED PERMISSION CHECK (Role/Permission based) ---
+        # This checks the permissions required by the command decorators (e.g., kick_members=True)
+        if hasattr(command, '_checks'):
+            required_perms = {}
             for check in command._checks:
-                try:
-                    await discord.utils.maybe_coroutine(check, interaction)
-                except (app_commands.MissingPermissions, app_commands.CheckFailure):
-                    is_allowed = False
-                    break
+                if hasattr(check, 'permissions'):
+                    required_perms = check.permissions
+
+            if required_perms:
+                # Check if the member has ALL required permissions
+                for perm_name, required_value in required_perms.items():
+                    if required_value and not getattr(member.guild_permissions, perm_name):
+                        is_allowed = False
+                        break
+        # --- END STABILIZED PERMISSION CHECK ---
         
         if is_allowed:
             allowed_commands.append(f"`/{command.name}` - {command.description}")
@@ -221,106 +193,9 @@ async def help_command(interaction: discord.Interaction):
     await send_log_embed(interaction.guild, log_embed)
 
 
-# --- VOICE RECORDING COMMANDS (CRAIG-STYLE) ---
-
-@bot.tree.command(name="join", description="Joins your voice channel and starts multi-track recording (Craig-style).")
-@app_commands.checks.has_permissions(move_members=True)
-async def join_command(interaction: discord.Interaction):
-    if not interaction.guild or not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.response.send_message("❌ You must be in a voice channel to use this command!", ephemeral=True)
-        return
-
-    voice_channel = interaction.user.voice.channel
-    guild_id = interaction.guild_id
-
-    if guild_id in voice_clients and voice_clients[guild_id].is_connected():
-        await interaction.response.send_message(f"❌ I'm already recording in {voice_clients[guild_id].channel.mention}!", ephemeral=True)
-        return
-
-    try:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        if guild_id in voice_clients:
-            vc = await voice_clients[guild_id].move_to(voice_channel)
-        else:
-            vc = await voice_channel.connect()
-            voice_clients[guild_id] = vc
-    except discord.Forbidden:
-        await interaction.followup.send("❌ I do not have permission to join that voice channel.", ephemeral=True)
-        return
-    except Exception as e:
-        logger.error(f"Voice connect error: {e}")
-        await interaction.followup.send("❌ An error occurred while trying to connect to the voice channel. Check bot permissions.", ephemeral=True)
-        return
-
-    vc.start_recording(
-        sinks.WaveSink(), 
-        finished_recording_callback, 
-        interaction.channel 
-    )
-
-    embed = discord.Embed(
-        title="🔴 Recording Started (Multi-Track)",
-        description=f"I have joined and started recording **{voice_channel.mention}**.\nType `/stop` to end the recording and receive the files.",
-        color=discord.Color.red()
-    )
-    await interaction.followup.send(embed=embed)
-    
-    log_embed = discord.Embed(
-        title="🎤 Voice Recording Started", 
-        description=f"**Channel:** {voice_channel.mention}\n**Started By:** {interaction.user.mention}", 
-        color=discord.Color.red()
-    )
-    await send_log_embed(interaction.guild, log_embed)
-
-
-@bot.tree.command(name="stop", description="Stops the current recording and sends the audio file(s).")
-@app_commands.checks.has_permissions(move_members=True)
-async def stop_command(interaction: discord.Interaction):
-    guild_id = interaction.guild_id
-
-    if guild_id not in voice_clients or not voice_clients[guild_id].is_connected():
-        await interaction.response.send_message("❌ I am not currently recording in any channel.", ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    vc: VoiceClient = voice_clients[guild_id]
-
-    try:
-        vc.stop_recording() 
-        await interaction.followup.send("✅ Stopping recording and processing audio files. They will be sent to the initial text channel shortly.", ephemeral=True)
-    except Exception as e:
-        logger.error(f"Error stopping recording: {e}")
-        await interaction.followup.send("❌ An error occurred while trying to stop the recording.", ephemeral=True)
-        if guild_id in voice_clients:
-            await voice_clients[guild_id].disconnect()
-            del voice_clients[guild_id]
-
-
-@bot.tree.command(name="leave", description="Stops the bot and disconnects it from the voice channel.")
-async def leave_command(interaction: discord.Interaction):
-    guild_id = interaction.guild_id
-
-    if guild_id not in voice_clients or not voice_clients[guild_id].is_connected():
-        await interaction.response.send_message("❌ I am not currently in a voice channel.", ephemeral=True)
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    vc: VoiceClient = voice_clients[guild_id]
-    
-    if vc.is_recording():
-        vc.stop_recording()
-    
-    await vc.disconnect()
-    del voice_clients[guild_id]
-
-    await interaction.followup.send("👋 Disconnected from the voice channel.", ephemeral=True)
-    
-    log_embed = discord.Embed(
-        title="🔌 Voice Disconnected", 
-        description=f"**Actioned By:** {interaction.user.mention}", 
-        color=discord.Color.blue()
-    )
-    await send_log_embed(interaction.guild, log_embed)
+# [REMOVED] VOICE RECORDING COMMANDS BLOCK (Pycord-specific)
+# The original /join, /stop, and /leave commands are permanently removed as they rely 
+# on deleted, Pycord-specific functionality and caused errors.
 
 # --- MODERATION COMMANDS (10) ---
 
@@ -329,8 +204,9 @@ async def leave_command(interaction: discord.Interaction):
 async def kick_command(interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
     await interaction.response.defer(ephemeral=True, thinking=True)
     
+    # Check for role hierarchy (mod up roles logic)
     if member.top_role >= interaction.user.top_role and member != interaction.user:
-        await interaction.followup.send("❌ You cannot kick this user because their role is equal to or higher than yours.", ephemeral=True)
+        await interaction.followup.send("❌ You cannot kick this user because their top role is equal to or higher than yours.", ephemeral=True)
         return
         
     try:
@@ -354,6 +230,11 @@ async def kick_command(interaction: discord.Interaction, member: discord.Member,
 @app_commands.checks.has_permissions(moderate_members=True)
 async def tempmute_command(interaction: discord.Interaction, member: discord.Member, duration: str, reason: str = "No reason provided."):
     await interaction.response.defer(ephemeral=True, thinking=True)
+    
+    # Check for role hierarchy (mod up roles logic)
+    if member.top_role >= interaction.user.top_role and member != interaction.user:
+        await interaction.followup.send("❌ You cannot mute this user because their top role is equal to or higher than yours.", ephemeral=True)
+        return
     
     td = parse_duration(duration)
     if td is None:
@@ -438,17 +319,14 @@ async def userinfo_command(interaction: discord.Interaction, member: Optional[di
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-@bot.tree.command(name="sync", description="[Admin Only] Globally syncs all slash commands.")
+@bot.tree.command(name="sync", description="[Admin/Manager Only] Globally syncs all slash commands.")
+@app_commands.checks.has_permissions(manage_guild=True) # <<< UPDATED TO CHECK FOR ROLE/PERMS INSTEAD OF ADMIN_ID
 async def sync_command(interaction: discord.Interaction):
-    if interaction.user.id != ADMIN_ID:
-        await interaction.response.send_message("❌ This command is for the bot owner only.", ephemeral=True)
-        return
-        
     await interaction.response.defer(ephemeral=True, thinking=True)
     
     try:
         synced = await bot.tree.sync()
-        await interaction.followup.send(f"✅ Successfully synced {len(synced)} commands globally.", ephemeral=True)
+        await interaction.followup.send(f"✅ Successfully synced {len(synced)} commands globally. Run /help to see the updated list.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Failed to sync commands: `{e}`", ephemeral=True)
 
@@ -570,9 +448,9 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     )
     try:
         if interaction.response.is_done():
-             await interaction.followup.send(embed=response_embed, ephemeral=True)
+            await interaction.followup.send(embed=response_embed, ephemeral=True)
         else:
-             await interaction.response.send_message(embed=response_embed, ephemeral=True)
+            await interaction.response.send_message(embed=response_embed, ephemeral=True)
     except Exception:
         pass
 
