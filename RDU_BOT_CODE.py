@@ -871,14 +871,18 @@ class ModerationCommands(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
         
+    # --- FIX APPLIED HERE: Changed type hint to TextChannel | Member to resolve TypeError ---
     @app_commands.command(name="ignore", description="Toggles bot response on a channel or user (admin-only) (Placeholder).")
     @app_commands.checks.has_permissions(administrator=True)
-    async def ignore_command(self, interaction: discord.Interaction, target: discord.abc.GuildChannel | discord.Member):
+    async def ignore_command(self, interaction: discord.Interaction, target: discord.TextChannel | discord.Member):
+        target_name = target.mention if isinstance(target, discord.Member) else target.mention
+        
         embed = create_embed(
             title="🤫 Ignore Toggled",
-            description=f"Bot will now ignore messages from **{target.mention if isinstance(target, discord.Member) else target.name}**."
+            description=f"Bot will now ignore messages from **{target_name}**."
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
+    # --- END FIX ---
         
     @app_commands.command(name="banlist", description="Lists all currently banned users (Placeholder).")
     @app_commands.checks.has_permissions(ban_members=True)
