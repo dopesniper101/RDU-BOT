@@ -77,7 +77,7 @@ CORE_COMMANDS = {
 }
 
 
-# --- CORE COMMAND: HELP (OPTIMIZED) ---
+# --- CORE COMMAND: HELP (OPTIMIZED AND FIXED FOR 30S DELETION) ---
 
 @bot.tree.command(name="help", description="Shows the most important commands you can use. (Ephemeral/30s)")
 async def help_command(interaction: discord.Interaction):
@@ -85,34 +85,31 @@ async def help_command(interaction: discord.Interaction):
         await interaction.response.send_message("This command only works in servers!", ephemeral=True)
         return
 
+    # Defer the response so we can follow up with the embed
     await interaction.response.defer(ephemeral=True, thinking=True)
 
     allowed_commands = []
     
+    # Logic to filter commands based on CORE_COMMANDS and user permissions...
     for command in bot.tree.walk_commands():
         
-        # 1. Skip commands not in the CORE_COMMANDS list
         if command.name not in CORE_COMMANDS:
             continue
             
-        # 2. Robust check for command object integrity (prevents the AttributeError)
         if not isinstance(command, app_commands.Command) or not hasattr(command, '_checks'):
             continue
 
         is_allowed = True
         
-        # 3. Check permissions
         if command._checks:
             for check in command._checks:
                 try:
-                    # Execute the check with the interaction object
                     await discord.utils.maybe_coroutine(check, interaction)
                 except (app_commands.MissingPermissions, app_commands.CheckFailure):
                     is_allowed = False
                     break
         
         if is_allowed:
-            # Add the command, categorizing the list by name for easy reading
             allowed_commands.append(f"`/{command.name}` - {command.description}")
 
     if allowed_commands:
@@ -131,7 +128,24 @@ async def help_command(interaction: discord.Interaction):
         )
         embed.set_footer(text="This message is only visible to you and will self-dismiss after a short period (30s).")
 
+    # Send the ephemeral response
     await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    # 🌟 NEW FIX: Start the 30-second deletion timer
+    await asyncio.sleep(30)
+    try:
+        # Use delete_original_response to remove the ephemeral message
+        await interaction.delete_original_response()
+    except discord.errors.NotFound:
+        # The message might have already been dismissed by the user, which is fine.
+        pass
+    except Exception as e:
+        logger.error(f"Failed to delete help message: {e}")
+
+    # 🌟 LOG: Help command used
+    log_embed = discord.Embed(description=f"Help command used by {interaction.user.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
+
 
 # ----------------------------------------------------
 # 🛡️ MODERATION COMMANDS (10)
@@ -778,7 +792,9 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
     # 🌟 LOG: Send the detailed error log to the channel
     log_embed = discord.Embed(title=log_title, description=log_description, color=log_color)
-    await send_log_embed(interaction.guild, log_embed)
+    # We must check if the interaction object has the guild attribute before logging to a guild channel
+    if hasattr(interaction, 'guild') and interaction.guild is not None:
+        await send_log_embed(interaction.guild, log_embed)
 
 
 try:
