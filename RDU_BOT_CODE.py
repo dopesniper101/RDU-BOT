@@ -196,12 +196,12 @@ class CoreCommands(commands.Cog):
             await interaction.followup.send(f"❌ Failed to sync commands: `{e}`", ephemeral=True)
 
     @app_commands.command(name="reload", description="Reloads a specific cog (owner-only).")
-    @commands.is_owner() # <-- CORRECTED
+    @commands.is_owner()
     async def reload_command(self, interaction: discord.Interaction, cog_name: str):
         await interaction.response.send_message(f"Attempting to reload cog {cog_name}...", ephemeral=True)
 
     @app_commands.command(name="shutdown", description="Safely shuts down the bot (owner-only).")
-    @commands.is_owner() # <-- CORRECTED
+    @commands.is_owner()
     async def shutdown_command(self, interaction: discord.Interaction):
         await interaction.response.send_message("Shutting down...", ephemeral=True)
         await self.bot.close()
@@ -407,8 +407,8 @@ class RustGameCommands(commands.Cog):
     async def bpwipe_command(self, interaction: discord.Interaction):
         await interaction.response.send_message("📜 Next BP Wipe: 1st Thursday of the Month (Simulated)", ephemeral=False)
 
-    @app_commands.command(name="status", description="Displays the live player count and server health.")
-    async def status_command(self, interaction: discord.Interaction):
+    @app_commands.command(name="serverstatus", description="Displays the live player count and RUST server health.") # <--- RENAMED
+    async def serverstatus_command(self, interaction: discord.Interaction):
         players = random.randint(50, 200)
         await interaction.response.send_message(f"🟢 Server Status: {players}/250 players online (Simulated)", ephemeral=False)
 
