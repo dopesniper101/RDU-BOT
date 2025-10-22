@@ -1,108 +1,70 @@
 # ==============================================================================
-# 🤖 RDU BOT CODE (FULL CONTENT FOR GITHUB: RDU CODE.py)
-# Includes Permissions-Aware, Ephemeral, Auto-Deleting /help Command
+# 📝 RDU CODE.py Content (For GitHub)
 # ==============================================================================
-
 import os
 import discord
 from discord.ext import commands
 from discord import app_commands
 import logging
-from datetime import datetime, timedelta
-import asyncio # Required for the sleep function in /help
+import asyncio
 
-# --- SETUP ---
-
-# Get the token from the environment variable set by the Colab Runner
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN') or os.getenv('TOKEN')
 if not DISCORD_TOKEN:
-    print("❌ CRITICAL ERROR: Bot token not found in environment variables.")
-    # Exiting here will prevent the bot.run() from failing later
     exit()
 
-# Bot configuration
 BOT_NAME = "RUST DOWN UNDER"
 DESCRIPTION = "A Discord bot for the RUST DOWN UNDER community"
-LOG_CHANNEL_NAME = "bot-logs" # The name of the channel for logging all actions
+LOG_CHANNEL_NAME = "bot-logs" 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Set up bot intents
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.guilds = True
 
-# Create bot instance
-bot = commands.Bot(command_prefix='!', intents=intents, description=DESCRIPTION)
-
-# --- Logging Helper Function ---
+bot = commands.Bot(command_prefix='!', intents=intents, description=DESCRIPTION, help_command=None)
 
 async def send_log_embed(guild, embed):
-    """Finds the bot-logs channel and sends the embed."""
     log_channel = discord.utils.get(guild.channels, name=LOG_CHANNEL_NAME)
     if log_channel:
         try:
             await log_channel.send(embed=embed)
-        except discord.Forbidden:
-            logger.error(f"Cannot send logs to #{LOG_CHANNEL_NAME} in {guild.name}. Check bot permissions.")
-        except Exception as e:
-            logger.error(f"ERROR sending log: {e}")
-
-# --- BOT EVENTS ---
+        except Exception:
+            pass
 
 @bot.event
 async def on_ready():
-    """Event triggered when the bot is ready"""
-    print(f'{BOT_NAME} is now online!')
-    print(f'Bot ID: {bot.user.id}')
-    print('------')
-    
-    # Sync slash commands
     try:
-        synced = await bot.tree.sync()
-        print(f'Synced {len(synced)} command(s)')
-    except Exception as e:
-        print(f'Failed to sync commands: {e}')
-
-# --- CORE COMMAND: HELP (Updated for Ephemeral, Permissions, and Auto-Delete) ---
+        await bot.tree.sync()
+    except Exception:
+        pass
 
 @bot.tree.command(name="help", description="Shows a list of commands you have permission to use. (Ephemeral/30s)")
 async def help_command(interaction: discord.Interaction):
-    """
-    Shows a list of commands the user has permission to use.
-    The response is ephemeral and deletes itself after 30 seconds (user will see a 'Dismiss' button).
-    """
     if not interaction.guild:
         await interaction.response.send_message("This command only works in servers!", ephemeral=True)
         return
 
-    # Defer the response to allow time for processing
     await interaction.response.defer(ephemeral=True, thinking=True)
 
     allowed_commands = []
     
-    # Iterate through all registered slash commands
     for command in bot.tree.walk_commands():
         is_allowed = True
         
-        # Check if the user meets all permission checks (e.g., @app_commands.checks.has_permissions)
         if command._checks:
             for check in command._checks:
                 try:
-                    # Attempt to run the check; if it fails, an exception is raised
                     await discord.utils.maybe_coroutine(check, interaction)
                 except (app_commands.MissingPermissions, app_commands.CheckFailure):
-                    # If the user fails ANY check, they are not allowed to see the command
                     is_allowed = False
                     break
         
         if is_allowed:
-            # Format: /command_name - command description
             allowed_commands.append(f"`/{command.name}` - {command.description}")
 
-    # Create the final Embed
     if allowed_commands:
         commands_list = "\n".join(sorted(allowed_commands))
         embed = discord.Embed(
@@ -110,7 +72,6 @@ async def help_command(interaction: discord.Interaction):
             description=f"**Commands you can use in {interaction.guild.name}:**\n\n{commands_list}",
             color=discord.Color.gold()
         )
-        # Ephemeral messages are dismissed by the user or Discord. Adding this to guide the user.
         embed.set_footer(text="This message is only visible to you and will self-dismiss after a short period (30s).")
     else:
         embed = discord.Embed(
@@ -120,16 +81,7 @@ async def help_command(interaction: discord.Interaction):
         )
         embed.set_footer(text="This message is only visible to you and will self-dismiss after a short period (30s).")
 
-    # Send the ephemeral message as a followup to the defer
-    message = await interaction.followup.send(embed=embed, ephemeral=True)
-
-    # Note on Auto-Delete: Ephemeral messages cannot be directly deleted by the bot
-    # via the API after they are sent. We rely on the user dismissing the message 
-    # or Discord's automatic timeout (which is longer than 30s). The `asyncio.sleep`
-    # here is largely illustrative of the timer. If you needed true 30s deletion, 
-    # the message could not be ephemeral.
-
-# --- MODERATION COMMANDS (Your existing commands) ---
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="warn", description="Issue a formal warning to a user")
 @app_commands.describe(user="The user to warn", reason="Reason for the warning")
@@ -161,9 +113,6 @@ async def kick(interaction: discord.Interaction, user: discord.Member, reason: s
         await send_log_embed(interaction.guild, log_embed)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to kick this user!", ephemeral=True)
-
-# ... (Include all your other moderation commands like ban, mute, clear, etc. here) ...
-# I am providing placeholders for the rest of your structure.
 
 @bot.tree.command(name="ban", description="Ban a user from the server")
 @app_commands.describe(user="The user to ban", reason="Reason for the ban")
@@ -201,8 +150,6 @@ async def clear(interaction: discord.Interaction, amount: app_commands.Range[int
     await send_log_embed(interaction.guild, log_embed)
 
 
-# --- ERROR HANDLER ---
-
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
@@ -215,12 +162,8 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
              await interaction.followup.send(embed=embed, ephemeral=True)
         else:
              await interaction.response.send_message(embed=embed, ephemeral=True)
-    else:
-        logger.error(f"Unhandled command error in {interaction.command.name}: {error}")
         
-# --- BOT RUN ---
-
 try:
     bot.run(DISCORD_TOKEN)
-except Exception as e:
-    print(f"\n\n❌ A critical error occurred during bot execution: {e}")
+except Exception:
+    pass
