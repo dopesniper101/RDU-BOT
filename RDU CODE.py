@@ -1,14 +1,10 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-import os
-from dotenv import load_dotenv
+import os # Necessary for os.getenv
 import asyncio
 import logging
-from datetime import datetime
-
-# Load environment variables
-load_dotenv()
+from datetime import datetime, timedelta
 
 # Set up logging for DM attempts
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -52,7 +48,8 @@ async def on_ready():
 @bot.event
 async def on_member_join(member):
     """Welcome new members"""
-    channel = discord.utils.get(member.guild.channels, name='welcome')
+    # Assuming 'welcome' is the name of your welcome channel
+    channel = discord.utils.get(member.guild.channels, name='welcome') 
     if channel:
         embed = discord.Embed(
             title="Welcome to RUST DOWN UNDER!",
@@ -62,12 +59,14 @@ async def on_member_join(member):
         embed.set_thumbnail(url=member.avatar.url if member.avatar else None)
         await channel.send(embed=embed)
 
+# --- SLASH COMMANDS (Ping, Info, Help) ---
+
 @bot.tree.command(name="ping", description="Check if the bot is responsive")
 async def ping(interaction: discord.Interaction):
     """Ping command to test bot responsiveness"""
     if not interaction.guild:
         log_dm_attempt(interaction.user, "ping")
-        await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
+        await interaction.response.send_message("This command only works in servers, not DMs!", ephemeral=True)
         return
         
     latency = round(bot.latency * 1000)
@@ -84,7 +83,7 @@ async def serverinfo(interaction: discord.Interaction):
     guild = interaction.guild
     if not guild:
         log_dm_attempt(interaction.user, "serverinfo")
-        await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
+        await interaction.response.send_message("This command only works in servers, not DMs!", ephemeral=True)
         return
         
     embed = discord.Embed(
@@ -109,7 +108,7 @@ async def userinfo(interaction: discord.Interaction, user: discord.Member = None
     if user is None:
         if not interaction.guild:
             log_dm_attempt(interaction.user, "userinfo")
-            await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
+            await interaction.response.send_message("This command only works in servers, not DMs!", ephemeral=True)
             return
         if not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("Unable to get user information!", ephemeral=True)
@@ -124,7 +123,7 @@ async def userinfo(interaction: discord.Interaction, user: discord.Member = None
     embed.add_field(name="ID", value=user.id, inline=True)
     embed.add_field(name="Joined Server", value=user.joined_at.strftime("%B %d, %Y") if user.joined_at else "Unknown", inline=True)
     embed.add_field(name="Account Created", value=user.created_at.strftime("%B %d, %Y"), inline=True)
-    embed.add_field(name="Roles", value=len(user.roles) - 1, inline=True)  # -1 to exclude @everyone
+    embed.add_field(name="Roles", value=len(user.roles) - 1, inline=True)
     
     if user.avatar:
         embed.set_thumbnail(url=user.avatar.url)
@@ -136,7 +135,7 @@ async def testwelcome(interaction: discord.Interaction):
     """Test what the welcome message looks like"""
     if not interaction.guild:
         log_dm_attempt(interaction.user, "testwelcome")
-        await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
+        await interaction.response.send_message("This command only works in servers, not DMs!", ephemeral=True)
         return
         
     embed = discord.Embed(
@@ -153,12 +152,12 @@ async def help_command(interaction: discord.Interaction):
     """Display help information"""
     if not interaction.guild:
         log_dm_attempt(interaction.user, "help")
-        await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
+        await interaction.response.send_message("This command only works in servers, not DMs!", ephemeral=True)
         return
         
     embed = discord.Embed(
         title=f"{BOT_NAME} - Available Commands",
-        description="Here are the commands you can use:",
+        description="Here are the commands you can use. All are slash commands (/).",
         color=discord.Color.gold()
     )
     
@@ -167,7 +166,7 @@ async def help_command(interaction: discord.Interaction):
         value="""
         `/ping` - Check bot responsiveness
         `/serverinfo` - Show server information
-        `/userinfo` - Show user information
+        `/userinfo [user]` - Show user information
         `/testwelcome` - Test the welcome message
         `/help` - Show this help message
         """, 
@@ -175,11 +174,11 @@ async def help_command(interaction: discord.Interaction):
     )
     
     embed.add_field(
-        name="Moderation Commands", 
+        name="Moderation Commands (Requires Permissions)", 
         value="""
-        `/kick` - Kick a user from the server
-        `/ban` - Ban a user from the server
-        `/mute` - Mute a user
+        `/kick [user] [reason]` - Kick a user
+        `/ban [user] [reason]` - Ban a user
+        `/mute [user] [duration] [reason]` - Mute a user (duration in minutes)
         """, 
         inline=False
     )
@@ -187,14 +186,15 @@ async def help_command(interaction: discord.Interaction):
     embed.set_footer(text="Use slash commands (/) to interact with the bot")
     await interaction.response.send_message(embed=embed)
 
-# Moderation Commands
+# --- MODERATION COMMANDS ---
+
 @bot.tree.command(name="kick", description="Kick a user from the server")
 @app_commands.describe(user="The user to kick", reason="Reason for the kick")
 async def kick(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
     """Kick a user from the server"""
     if not interaction.guild:
         log_dm_attempt(interaction.user, "kick")
-        await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
+        await interaction.response.send_message("This command only works in servers, not DMs!", ephemeral=True)
         return
         
     if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.kick_members:
@@ -206,7 +206,7 @@ async def kick(interaction: discord.Interaction, user: discord.Member, reason: s
         return
     
     try:
-        await user.kick(reason=f"Kicked by {interaction.user}: {reason}")
+        await user.kick(reason=f"Kicked by {interaction.user.display_name}: {reason}")
         embed = discord.Embed(
             title="User Kicked",
             description=f"{user.mention} has been kicked from the server.",
@@ -226,7 +226,7 @@ async def ban(interaction: discord.Interaction, user: discord.Member, reason: st
     """Ban a user from the server"""
     if not interaction.guild:
         log_dm_attempt(interaction.user, "ban")
-        await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
+        await interaction.response.send_message("This command only works in servers, not DMs!", ephemeral=True)
         return
         
     if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.ban_members:
@@ -238,7 +238,7 @@ async def ban(interaction: discord.Interaction, user: discord.Member, reason: st
         return
     
     try:
-        await user.ban(reason=f"Banned by {interaction.user}: {reason}")
+        await user.ban(reason=f"Banned by {interaction.user.display_name}: {reason}")
         embed = discord.Embed(
             title="User Banned",
             description=f"{user.mention} has been banned from the server.",
@@ -253,12 +253,12 @@ async def ban(interaction: discord.Interaction, user: discord.Member, reason: st
         await interaction.response.send_message(f"An error occurred: {e}", ephemeral=True)
 
 @bot.tree.command(name="mute", description="Mute a user in the server")
-@app_commands.describe(user="The user to mute", duration="Duration in minutes", reason="Reason for the mute")
+@app_commands.describe(user="The user to mute", duration="Duration in minutes (e.g., 60 for 1 hour)", reason="Reason for the mute")
 async def mute(interaction: discord.Interaction, user: discord.Member, duration: int = 60, reason: str = "No reason provided"):
     """Mute a user for a specified duration"""
     if not interaction.guild:
         log_dm_attempt(interaction.user, "mute")
-        await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
+        await interaction.response.send_message("This command only works in servers, not DMs!", ephemeral=True)
         return
         
     if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.moderate_members:
@@ -270,11 +270,9 @@ async def mute(interaction: discord.Interaction, user: discord.Member, duration:
         return
     
     try:
-        # Convert duration to timedelta
-        from datetime import datetime, timedelta
         timeout_until = discord.utils.utcnow() + timedelta(minutes=duration)
         
-        await user.timeout(timeout_until, reason=f"Muted by {interaction.user}: {reason}")
+        await user.timeout(timeout_until, reason=f"Muted by {interaction.user.display_name}: {reason}")
         embed = discord.Embed(
             title="User Muted",
             description=f"{user.mention} has been muted for {duration} minutes.",
@@ -304,17 +302,23 @@ async def on_command_error(ctx, error):
 # Run the bot
 async def main():
     """Main function to run the bot"""
+    
+    # ⚠️ This is the key change! It looks for the environment variable.
     discord_token = os.getenv('DISCORD_BOT_TOKEN')
     
     if not discord_token:
-        print("ERROR: DISCORD_BOT_TOKEN not found in environment variables!")
-        print("Please add your Discord bot token to the environment secrets.")
+        # Fallback check for another common variable name
+        discord_token = os.getenv('TOKEN')
+    
+    if not discord_token:
+        print("\n🛑 ERROR: Discord bot token not found in environment variables.")
+        print("Please ensure your token is added to Colab Secrets under the name 'DISCORD_BOT_TOKEN'.")
         return
     
     try:
         await bot.start(discord_token)
     except discord.LoginFailure:
-        print("ERROR: Invalid Discord bot token!")
+        print("ERROR: Invalid Discord bot token! Please check your token.")
     except Exception as e:
         print(f"ERROR: Failed to start bot: {e}")
 
