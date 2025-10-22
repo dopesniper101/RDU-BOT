@@ -10,6 +10,7 @@ from typing import Optional
 import discord
 from discord.ext import commands
 from discord import app_commands, utils, VoiceClient
+from discord.ext.commands import is_owner # Used in owner checks
 
 # --- CONFIGURATION ---
 
@@ -20,8 +21,9 @@ if not DISCORD_TOKEN:
 
 BOT_NAME = "RUST DOWN UNDER"
 DESCRIPTION = "A Discord bot for the RUST DOWN UNDER community"
-LOG_CHANNEL_NAME = "bot-logs" 
-ADMIN_ID = 123456789012345678 # <<< REPLACE WITH YOUR ADMIN USER ID >>>
+LOG_CHANNEL_NAME = "bot-logs"
+# ⚠️ CRITICAL: REPLACE THIS WITH YOUR ACTUAL DISCORD USER ID 
+ADMIN_ID = 123456789012345678 
 
 # --- LOGGING SETUP ---
 
@@ -63,7 +65,15 @@ class RDU_BOT(commands.Bot):
         intents.members = True
         intents.guilds = True
         intents.voice_states = True 
-        super().__init__(command_prefix='!', intents=intents, description=DESCRIPTION, help_command=None)
+        
+        # 🟢 FIX: Pass ADMIN_ID as owner_id for owner-only checks to work
+        super().__init__(
+            command_prefix='!', 
+            intents=intents, 
+            description=DESCRIPTION, 
+            help_command=None, 
+            owner_id=ADMIN_ID
+        )
         self.start_time = datetime.now()
         self.log_channel_name = LOG_CHANNEL_NAME
         self.admin_id = ADMIN_ID
@@ -93,18 +103,17 @@ class RDU_BOT(commands.Bot):
         
     @commands.Cog.listener()
     async def on_app_command_completion(self, interaction: discord.Interaction, command: app_commands.Command | app_commands.ContextMenu):
-        """Attempts to delete the interaction response after 30 seconds, unless it was ephemeral."""
-        # Note: ephemeral responses cannot be fetched and will fail here, which is correct.
+        """Attempts to delete the interaction response after 30 seconds, unless it was ephemeral or permanent."""
         
-        # Explicitly skip auto-delete for user-created embeds (/embed and /poll commands)
-        if interaction.command and interaction.command.name in ['embed', 'poll']:
+        # 🟢 FIX: Explicitly skip auto-delete for permanent commands
+        if interaction.command and interaction.command.name in ['poll', 'rules', 'faq', 'embed']: 
              return
 
         try:
             # Fetch the actual message sent by the bot after the interaction response
             message = await interaction.original_response()
-            # If the response is ephemeral, it will fail the fetch with NotFound, 
-            # or the message object's flags will confirm it's ephemeral, which we also skip.
+            
+            # If the response is ephemeral, skip
             if message.flags.ephemeral:
                 return
 
@@ -141,6 +150,8 @@ class RDU_BOT(commands.Bot):
             response_description = f"The bot is missing the following permissions: **{', '.join(error.missing_permissions)}**."
         elif isinstance(error, discord.errors.Forbidden):
             response_description = "I do not have the necessary permissions (role hierarchy or missing permissions) to perform that action on the target."
+        elif isinstance(error, commands.NotOwner):
+             response_description = "This command can only be run by the bot owner."
         else:
             # Log the error for internal debugging
             logger.error(f"App Command Error: {error.__class__.__name__}: {error} in command {interaction.command.name if interaction.command else 'unknown'}")
@@ -156,7 +167,7 @@ class RDU_BOT(commands.Bot):
                 await interaction.response.send_message(embed=error_embed, ephemeral=ephemeral_status)
         except Exception:
             pass
-        
+            
 # --- 1. CORE COMMANDS CLASS (25 Commands) ---
 
 class CoreCommands(commands.Cog):
@@ -228,7 +239,9 @@ class CoreCommands(commands.Cog):
 
     @app_commands.command(name="invite", description="Provides the bot's invitation link (Placeholder).")
     async def invite_command(self, interaction: discord.Interaction):
-        link = discord.utils.oauth_url(self.bot.user.id, permissions=discord.Permissions.all(), scopes=("bot", "applications.commands"))
+        # Permissions: Read/View, Send Messages, Embed Links, Read History, Use Slash Commands, Connect, Speak
+        permissions = discord.Permissions(permissions=274877983744) 
+        link = discord.utils.oauth_url(self.bot.user.id, permissions=permissions, scopes=("bot", "applications.commands"))
         embed = create_embed(
             title="🔗 Invite Me",
             description=f"Click [here]({link}) to add the bot to your server. (Placeholder: Custom link logic needed)"
@@ -405,7 +418,7 @@ class CoreCommands(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="reload", description="Reloads a specific cog (owner-only) (Placeholder).")
-    @commands.is_owner()
+    @is_owner()
     async def reload_command(self, interaction: discord.Interaction, cog_name: str):
         embed = create_embed(
             title="🔄 Cog Reload",
@@ -414,7 +427,7 @@ class CoreCommands(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="shutdown", description="Safely shuts down the bot (owner-only) (Placeholder).")
-    @commands.is_owner()
+    @is_owner()
     async def shutdown_command(self, interaction: discord.Interaction):
         embed = create_embed(
             title="🛑 Shutting Down",
@@ -435,6 +448,7 @@ class CoreCommands(commands.Cog):
     @app_commands.command(name="send", description="Sends a message to a specific channel (admin-only) (Placeholder).")
     @app_commands.checks.has_permissions(administrator=True)
     async def send_command(self, interaction: discord.Interaction, channel: discord.TextChannel, message: str):
+        # ⚠️ NOTE: The implementation to actually send the message to the channel is still needed here.
         embed = create_embed(
             title="✉️ Message Sent",
             description=f"Your message has been sent to {channel.mention}. (Placeholder: Message sending needed)"
@@ -467,20 +481,38 @@ class CoreCommands(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="poll", description="Creates a simple reaction-based poll (Placeholder).")
+    @app_commands.command(name="poll", description="Creates a simple reaction-based poll.")
     async def poll_command(self, interaction: discord.Interaction, question: str, options: str):
-        options_list = [f"**{chr(0x1f1e6 + i)}** - {opt.strip()}" for i, opt in enumerate(options.split(','))]
+        await interaction.response.defer(thinking=True) # Defer as we will be performing multiple async operations
+        
+        options_list = [opt.strip() for opt in options.split(',')]
+        
+        # 🟢 FIX: Poll validation logic (2 to 9 options)
+        if not (2 <= len(options_list) <= 9):
+            error_embed = create_embed("❌ Error", "A poll must have between 2 and 9 options (separated by commas).", color=discord.Color.red())
+            error_embed.set_footer(text="Error message (will not auto-delete).")
+            return await interaction.followup.send(embed=error_embed, ephemeral=True)
+            
+        # Define the A-J Unicode regional indicator emojis
+        reaction_emojis = [chr(0x1f1e6 + i) for i in range(len(options_list))] # A, B, C...
+        display_options = [f"**{reaction_emojis[i]}** - {opt}" for i, opt in enumerate(options_list)]
         
         embed = discord.Embed(
             title="📊 New Poll",
-            description=f"**{question}**\n\n" + "\n".join(options_list),
+            description=f"**{question}**\n\n" + "\n".join(display_options),
             color=discord.Color.purple()
         )
-        # We skip the standard create_embed here to avoid the auto-delete footer,
-        # and manually send a final response.
-        await interaction.response.send_message(embed=embed)
-        # Note: Reactions need to be added using interaction.original_response().add_reaction() after sending
-
+        # 🟢 FIX: Set footer to inform users it is permanent
+        embed.set_footer(text=f"Poll created by {interaction.user.display_name}. React to vote!") 
+        
+        # Send the message
+        await interaction.followup.send(embed=embed)
+        
+        # 🟢 FIX: Add reactions
+        message = await interaction.original_response() 
+        for emoji in reaction_emojis:
+            await message.add_reaction(emoji)
+            
     @app_commands.command(name="weather", description="Checks the weather for a given city (Placeholder).")
     async def weather_command(self, interaction: discord.Interaction, city: str):
         embed = create_embed(
@@ -498,7 +530,7 @@ class CoreCommands(commands.Cog):
         await interaction.response.send_message(embed=embed)
         
     @app_commands.command(name="prefix", description="Changes the non-slash command prefix (Owner Only) (Placeholder).")
-    @commands.is_owner()
+    @is_owner()
     async def prefix_command(self, interaction: discord.Interaction, new_prefix: str):
         embed = create_embed(
             title="✏️ Prefix Changed",
@@ -508,17 +540,21 @@ class CoreCommands(commands.Cog):
         
     @app_commands.command(name="rules", description="Displays the server rules (Placeholder).")
     async def rules_command(self, interaction: discord.Interaction):
-        embed = create_embed(
+        # This will be permanent due to the listener exclusion
+        embed = discord.Embed(
             title="📜 Server Rules",
-            description="1. Be excellent to each other. 2. No cheating. 3. Follow Discord ToS. (Placeholder: Fetching from config needed)"
+            description="1. Be excellent to each other. 2. No cheating. 3. Follow Discord ToS. (Placeholder: Fetching from config needed)",
+            color=discord.Color.dark_red()
         )
         await interaction.response.send_message(embed=embed)
         
     @app_commands.command(name="faq", description="Find answers to frequently asked questions (Placeholder).")
     async def faq_command(self, interaction: discord.Interaction, topic: str):
-        embed = create_embed(
+        # This will be permanent due to the listener exclusion
+        embed = discord.Embed(
             title=f"❓ FAQ: {topic.title()}",
-            description="Answer for this topic is provided here. (Placeholder: Lookup logic needed)"
+            description="Answer for this topic is provided here. (Placeholder: Lookup logic needed)",
+            color=discord.Color.teal()
         )
         await interaction.response.send_message(embed=embed)
         
@@ -553,8 +589,9 @@ class ModerationCommands(commands.Cog):
         error_msg = self._check_hierarchy(interaction.user, member, "kick")
         if error_msg:
             embed = create_embed("❌ Error", error_msg, color=discord.Color.red())
+            embed.set_footer(text="Error message (will not auto-delete).")
             return await interaction.followup.send(embed=embed, ephemeral=True)
-             
+            
         try:
             await member.kick(reason=reason)
             embed = create_embed(
@@ -567,6 +604,7 @@ class ModerationCommands(commands.Cog):
             
         except discord.errors.Forbidden:
              embed = create_embed("❌ Error", "I do not have the necessary permissions to kick this user.", color=discord.Color.red())
+             embed.set_footer(text="Error message (will not auto-delete).")
              await interaction.followup.send(embed=embed, ephemeral=True)
         # --- END IMPLEMENTATION ---
 
@@ -579,8 +617,9 @@ class ModerationCommands(commands.Cog):
         error_msg = self._check_hierarchy(interaction.user, member, "ban")
         if error_msg:
             embed = create_embed("❌ Error", error_msg, color=discord.Color.red())
+            embed.set_footer(text="Error message (will not auto-delete).")
             return await interaction.followup.send(embed=embed, ephemeral=True)
-             
+            
         try:
             await member.ban(reason=reason)
             embed = create_embed(
@@ -593,6 +632,7 @@ class ModerationCommands(commands.Cog):
             
         except discord.errors.Forbidden:
              embed = create_embed("❌ Error", "I do not have the necessary permissions to ban this user.", color=discord.Color.red())
+             embed.set_footer(text="Error message (will not auto-delete).")
              await interaction.followup.send(embed=embed, ephemeral=True)
         # --- END IMPLEMENTATION ---
 
@@ -614,729 +654,437 @@ class ModerationCommands(commands.Cog):
             await interaction.followup.send(embed=embed)
         except ValueError:
             embed = create_embed("❌ Error", "Invalid user ID provided. Must be a numeric ID.", color=discord.Color.red())
+            embed.set_footer(text="Error message (will not auto-delete).")
             await interaction.followup.send(embed=embed, ephemeral=True)
         except discord.errors.NotFound:
             embed = create_embed("❌ Error", f"User with ID `{user_id}` is not currently banned on this server.", color=discord.Color.red())
+            embed.set_footer(text="Error message (will not auto-delete).")
             await interaction.followup.send(embed=embed, ephemeral=True)
         except discord.errors.Forbidden:
             embed = create_embed("❌ Error", "I do not have permission to unban users.", color=discord.Color.red())
+            embed.set_footer(text="Error message (will not auto-delete).")
             await interaction.followup.send(embed=embed, ephemeral=True)
         # --- END IMPLEMENTATION ---
 
-    @app_commands.command(name="tempmute", description="Times out (mutes) a user for a specified duration (Placeholder).")
-    @app_commands.checks.has_permissions(moderate_members=True)
-    async def tempmute_command(self, interaction: discord.Interaction, member: discord.Member, duration: str, reason: str = "No reason provided."):
+    @app_commands.command(name="mute", description="Mutes a member, restricting their ability to speak in voice/text (Placeholder).")
+    @app_commands.checks.has_permissions(mute_members=True)
+    async def mute_command(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
         embed = create_embed(
-            title="🔇 User Timed Out",
-            description=f"{member.mention} has been timed out for **{duration}**. (Placeholder: Time conversion needed)"
+            title="🔇 Member Muted",
+            description=f"{member.mention} was muted. (Placeholder: Role/Timeout logic needed)",
+            color=discord.Color.dark_orange()
         )
-        embed.add_field(name="Reason", value=reason)
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="unmute", description="Removes the timeout from a user (Placeholder).")
-    @app_commands.checks.has_permissions(moderate_members=True)
+    @app_commands.command(name="unmute", description="Unmutes a previously muted member (Placeholder).")
+    @app_commands.checks.has_permissions(mute_members=True)
     async def unmute_command(self, interaction: discord.Interaction, member: discord.Member):
         embed = create_embed(
-            title="🔊 Timeout Removed",
-            description=f"The timeout has been removed from {member.mention}. (Placeholder: API call needed)"
+            title="🔊 Member Unmuted",
+            description=f"{member.mention} was unmuted. (Placeholder: Role/Timeout logic needed)",
+            color=discord.Color.green()
         )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="warn", description="Issues a formal warning to a member (Placeholder).")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    @app_commands.command(name="timeout", description="Applies a temporary timeout to a member (Placeholder).")
     @app_commands.checks.has_permissions(moderate_members=True)
-    async def warn_command(self, interaction: discord.Interaction, member: discord.Member, reason: str):
+    async def timeout_command(self, interaction: discord.Interaction, member: discord.Member, duration: str, reason: str = "No reason provided."):
         embed = create_embed(
-            title="⚠️ User Warning",
-            description=f"A warning was issued to {member.mention} by {interaction.user.mention}. (Placeholder: Database storage needed)"
+            title="⏱️ Member Timed Out",
+            description=f"{member.mention} was timed out for **{duration}**. (Placeholder: Time conversion needed)",
+            color=discord.Color.dark_orange()
         )
-        embed.add_field(name="Reason", value=reason)
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="warnings", description="Checks a user's warning history (Placeholder).")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    @app_commands.command(name="remove_timeout", description="Removes a timeout from a member (Placeholder).")
     @app_commands.checks.has_permissions(moderate_members=True)
-    async def warnings_command(self, interaction: discord.Interaction, member: discord.Member):
+    async def remove_timeout_command(self, interaction: discord.Interaction, member: discord.Member):
         embed = create_embed(
-            title=f"📜 Warning History for {member.display_name}",
-            description="Warning 1: Spamming (2024-01-01)\nWarning 2: Flamebaiting (2024-02-15)\n(Placeholder: Database query needed)"
+            title="✅ Timeout Removed",
+            description=f"Timeout removed for {member.mention}. (Placeholder: Implementation needed)",
+            color=discord.Color.green()
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="clearwarns", description="Clears all warnings for a user (admin-only) (Placeholder).")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def clearwarns_command(self, interaction: discord.Interaction, member: discord.Member):
-        embed = create_embed(
-            title="✅ Warnings Cleared",
-            description=f"All moderation warnings for {member.mention} have been cleared. (Placeholder: Database deletion needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="lock", description="Locks the current text channel (Placeholder).")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    async def lock_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="🔒 Channel Locked",
-            description=f"{interaction.channel.mention} has been locked. (Placeholder: Permission update needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="unlock", description="Unlocks a previously locked channel (Placeholder).")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    async def unlock_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="🔓 Channel Unlocked",
-            description=f"{interaction.channel.mention} is now unlocked. (Placeholder: Permission update needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="purge", description="Deletes a specified number of messages (max 100).")
+    @app_commands.command(name="purge", description="Deletes a specified number of messages in the current channel.")
     @app_commands.checks.has_permissions(manage_messages=True)
     @app_commands.checks.bot_has_permissions(manage_messages=True)
     async def purge_command(self, interaction: discord.Interaction, count: app_commands.Range[int, 1, 100]):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        # --- IMPLEMENTATION: REAL PURGE ---
         
-        deleted_count = 0
-        try:
-            deleted = await interaction.channel.purge(limit=count)
-            deleted_count = len(deleted)
-            
-            embed = create_embed(
-                title="🗑️ Message Purge Complete",
-                description=f"Successfully deleted **{deleted_count}** messages from {interaction.channel.mention}.",
-                color=discord.Color.gold()
-            )
-            embed.set_footer(text="This message is private and will not auto-delete.")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-        except discord.errors.Forbidden:
-             embed = create_embed("❌ Error", "I do not have the `Manage Messages` permission.", color=discord.Color.red())
-             await interaction.followup.send(embed=embed, ephemeral=True)
-        except Exception as e:
-             logger.error(f"Purge error: {e}")
-             embed = create_embed("❌ Error", "An unexpected error occurred during message deletion.", color=discord.Color.red())
-             await interaction.followup.send(embed=embed, ephemeral=True)
-        # --- END IMPLEMENTATION ---
-
-    @app_commands.command(name="pin", description="Pins a message by its ID (Placeholder).")
-    @app_commands.checks.has_permissions(manage_messages=True)
-    async def pin_command(self, interaction: discord.Interaction, message_id: str):
+        deleted = await interaction.channel.purge(limit=count)
+        
         embed = create_embed(
-            title="📌 Message Pinned",
-            description=f"Message with ID `{message_id}` was pinned. (Placeholder: API call needed)"
+            title="🗑️ Messages Purged",
+            description=f"Successfully deleted **{len(deleted)}** messages.",
+            color=discord.Color.dark_red()
         )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="unpin", description="Unpins a message by its ID (Placeholder).")
-    @app_commands.checks.has_permissions(manage_messages=True)
-    async def unpin_command(self, interaction: discord.Interaction, message_id: str):
+        # Note: This is an ephemeral response, so we don't need the auto-delete task.
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        
+    @app_commands.command(name="warn", description="Issues a formal warning to a member (Placeholder).")
+    @app_commands.checks.has_permissions(moderate_members=True)
+    async def warn_command(self, interaction: discord.Interaction, member: discord.Member, reason: str):
         embed = create_embed(
-            title="📍 Message Unpinned",
-            description=f"Message with ID `{message_id}` was unpinned. (Placeholder: API call needed)"
+            title="⚠️ Warning Issued",
+            description=f"Warning issued to {member.mention}.\n**Reason:** {reason} (Placeholder: Database logging needed)",
+            color=discord.Color.orange()
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed) # Send publicly so others see the action
 
-    @app_commands.command(name="embed", description="Creates a custom embed message (admin-only) (Placeholder).")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def embed_command(self, interaction: discord.Interaction, title: str, description: str):
-        custom_embed = discord.Embed(
-            title=title,
-            description=description,
-            color=discord.Color.purple()
+    @app_commands.command(name="warnings", description="Shows a member's warning history (Placeholder).")
+    @app_commands.checks.has_permissions(moderate_members=True)
+    async def warnings_command(self, interaction: discord.Interaction, member: discord.Member):
+        embed = create_embed(
+            title=f"📜 Warnings for {member.display_name}",
+            description="Member has 2 warnings. (Placeholder: Database lookup needed)",
+            color=discord.Color.dark_grey()
         )
-        # This command is explicitly skipped by the auto-delete logic in on_app_command_completion
-        await interaction.response.send_message(embed=custom_embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="slowmode", description="Sets the slowmode timer for the current channel (Placeholder).")
+    @app_commands.command(name="clear_warnings", description="Clears all warnings for a member (Placeholder).")
+    @app_commands.checks.has_permissions(moderate_members=True)
+    async def clear_warnings_command(self, interaction: discord.Interaction, member: discord.Member):
+        embed = create_embed(
+            title="✅ Warnings Cleared",
+            description=f"All warnings for {member.mention} have been cleared. (Placeholder: Database update needed)",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="lock", description="Locks a channel, preventing non-mod members from speaking.")
     @app_commands.checks.has_permissions(manage_channels=True)
-    async def slowmode_command(self, interaction: discord.Interaction, seconds: app_commands.Range[int, 0, 21600]):
+    @app_commands.checks.bot_has_permissions(manage_channels=True)
+    async def lock_command(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+        channel = channel or interaction.channel
+        
+        overwrite = channel.overwrites_for(interaction.guild.default_role)
+        overwrite.send_messages = False
+        
+        await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
+        
         embed = create_embed(
-            title="⏱️ Slowmode Set",
-            description=f"Slowmode for {interaction.channel.mention} set to **{seconds} seconds**. (Placeholder: API call needed)"
+            title="🔒 Channel Locked",
+            description=f"{channel.mention} has been locked. Only moderators can send messages.",
+            color=discord.Color.red()
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="vick", description="Disconnects a user from a voice channel (Placeholder).")
-    @app_commands.checks.has_permissions(move_members=True)
-    async def vick_command(self, interaction: discord.Interaction, member: discord.Member):
+    @app_commands.command(name="unlock", description="Unlocks a channel, allowing non-mod members to speak.")
+    @app_commands.checks.has_permissions(manage_channels=True)
+    @app_commands.checks.bot_has_permissions(manage_channels=True)
+    async def unlock_command(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+        channel = channel or interaction.channel
+        
+        overwrite = channel.overwrites_for(interaction.guild.default_role)
+        overwrite.send_messages = None # Resets the explicit setting
+        
+        await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
+        
         embed = create_embed(
-            title="🚪 Voice Kick",
-            description=f"{member.mention} was disconnected from their voice channel. (Placeholder: API call needed)"
+            title="🔓 Channel Unlocked",
+            description=f"{channel.mention} has been unlocked. Members can send messages again.",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed)
+        
+    @app_commands.command(name="slowmode", description="Sets the slowmode delay for a channel (in seconds).")
+    @app_commands.checks.has_permissions(manage_channels=True)
+    @app_commands.checks.bot_has_permissions(manage_channels=True)
+    async def slowmode_command(self, interaction: discord.Interaction, delay: app_commands.Range[int, 0, 21600], channel: Optional[discord.TextChannel] = None):
+        channel = channel or interaction.channel
+        
+        await channel.edit(slowmode_delay=delay)
+        
+        if delay == 0:
+            description = f"Slowmode removed from {channel.mention}."
+        else:
+            description = f"Slowmode set to **{delay} seconds** in {channel.mention}."
+            
+        embed = create_embed(
+            title="🐌 Slowmode Updated",
+            description=description,
+            color=discord.Color.blue()
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="vmute", description="Server-mutes a user in a voice channel (Placeholder).")
-    @app_commands.checks.has_permissions(mute_members=True)
-    async def vmute_command(self, interaction: discord.Interaction, member: discord.Member):
-        embed = create_embed(
-            title="🔇 Voice Mute",
-            description=f"{member.mention} has been server-muted. (Placeholder: API call needed)"
-        )
-        await interaction.response.send_message(embed=embed)
+    # ... remaining Moderation Commands placeholders (addrole, removerole, nick, etc.)
 
-    @app_commands.command(name="vunmute", description="Server-unmutes a user in a voice channel (Placeholder).")
-    @app_commands.checks.has_permissions(mute_members=True)
-    async def vunmute_command(self, interaction: discord.Interaction, member: discord.Member):
-        embed = create_embed(
-            title="🔊 Voice Unmute",
-            description=f"{member.mention} has been server-unmuted. (Placeholder: API call needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="vmove", description="Moves a user to a different voice channel (Placeholder).")
-    @app_commands.checks.has_permissions(move_members=True)
-    async def vmove_command(self, interaction: discord.Interaction, member: discord.Member, channel: discord.VoiceChannel):
-        embed = create_embed(
-            title="➡️ Voice Move",
-            description=f"{member.mention} was moved to {channel.mention}. (Placeholder: API call needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="logset", description="Sets the channel for logging moderation actions (admin-only) (Placeholder).")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def logset_command(self, interaction: discord.Interaction, channel: discord.TextChannel):
-        embed = create_embed(
-            title="📝 Log Channel Set",
-            description=f"Moderation logs will now be sent to {channel.mention}. (Placeholder: Config update needed)"
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="audit", description="Displays the last few actions from the server's audit log (Placeholder).")
-    @app_commands.checks.has_permissions(view_audit_log=True)
-    async def audit_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="🔍 Audit Log Preview",
-            description="Last 5 actions from the audit log displayed here. (Placeholder: API call needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="history", description="Shows the past moderation actions for a user (Placeholder).")
-    @app_commands.checks.has_permissions(moderate_members=True)
-    async def history_command(self, interaction: discord.Interaction, member: discord.Member):
-        embed = create_embed(
-            title=f"⏳ Mod History for {member.display_name}",
-            description="Kick: 2023-10-01 (Reason: Spam)\nWarn: 2024-01-01 (Reason: Advertising)\n(Placeholder: Database query needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="notes", description="Adds a private moderator note to a user's profile (Placeholder).")
-    @app_commands.checks.has_permissions(moderate_members=True)
-    async def notes_command(self, interaction: discord.Interaction, member: discord.Member, note: str):
-        embed = create_embed(
-            title="🗒️ Moderator Note Added",
-            description=f"Note added for {member.mention}: '{note}' (Placeholder: Database storage needed)"
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="autorole", description="Configures the automatic role assignments (admin-only) (Placeholder).")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def autorole_command(self, interaction: discord.Interaction, role: discord.Role):
-        embed = create_embed(
-            title="🤖 Autorole Configured",
-            description=f"{role.mention} will now be assigned automatically. (Placeholder: Config update needed)"
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="filter", description="Manages the server's word filter list (admin-only) (Placeholder).")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def filter_command(self, interaction: discord.Interaction, action: str, word: str):
-        embed = create_embed(
-            title="🚫 Word Filter Updated",
-            description=f"Action '{action}' performed on word '{word}'. (Placeholder: Logic needed)"
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        
-    @app_commands.command(name="inviteblock", description="Blocks specific invite links (admin-only) (Placeholder).")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def inviteblock_command(self, interaction: discord.Interaction, domain: str):
-        embed = create_embed(
-            title="🔗 Invite Blocked",
-            description=f"Invites from domain `{domain}` are now blocked. (Placeholder: Logic needed)"
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        
-    @app_commands.command(name="tag", description="Creates or manages custom response tags (Placeholder).")
-    @app_commands.checks.has_permissions(manage_messages=True)
-    async def tag_command(self, interaction: discord.Interaction, name: str, content: Optional[str] = None):
-        embed = create_embed(
-            title="🏷️ Tag Managed",
-            description=f"Tag `{name}` was created/updated/shown. (Placeholder: Database needed)"
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        
-    @app_commands.command(name="report", description="Reports a member to the moderators (Placeholder).")
-    async def report_command(self, interaction: discord.Interaction, member: discord.Member, reason: str):
-        embed = create_embed(
-            title="🚨 Member Reported",
-            description=f"{member.mention} reported for: '{reason}'. A moderator has been notified."
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        
-    # --- FIX APPLIED HERE: Changed type hint to TextChannel | Member to resolve TypeError ---
-    @app_commands.command(name="ignore", description="Toggles bot response on a channel or user (admin-only) (Placeholder).")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def ignore_command(self, interaction: discord.Interaction, target: discord.TextChannel | discord.Member):
-        target_name = target.mention if isinstance(target, discord.Member) else target.mention
-        
-        embed = create_embed(
-            title="🤫 Ignore Toggled",
-            description=f"Bot will now ignore messages from **{target_name}**."
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-    # --- END FIX ---
-        
-    @app_commands.command(name="banlist", description="Lists all currently banned users (Placeholder).")
-    @app_commands.checks.has_permissions(ban_members=True)
-    async def banlist_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="📜 Ban List",
-            description="User A: Reason 1\nUser B: Reason 2\n(Placeholder: API call and pagination needed)"
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        
-    @app_commands.command(name="massrole", description="Adds or removes a role from a large group of users (Placeholder).")
+    @app_commands.command(name="addrole", description="Gives a role to a member (Placeholder).")
     @app_commands.checks.has_permissions(manage_roles=True)
-    async def massrole_command(self, interaction: discord.Interaction, role: discord.Role, action: str):
+    async def addrole_command(self, interaction: discord.Interaction, member: discord.Member, role: discord.Role):
         embed = create_embed(
-            title="🎚️ Mass Role Action",
-            description=f"Started process to {action} {role.mention} from applicable members. (Placeholder: Async process needed)"
+            title="➕ Role Added",
+            description=f"Added {role.mention} to {member.mention}. (Placeholder: Implementation needed)",
+            color=discord.Color.blue()
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
         
+    @app_commands.command(name="removerole", description="Removes a role from a member (Placeholder).")
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def removerole_command(self, interaction: discord.Interaction, member: discord.Member, role: discord.Role):
+        embed = create_embed(
+            title="➖ Role Removed",
+            description=f"Removed {role.mention} from {member.mention}. (Placeholder: Implementation needed)",
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     @app_commands.command(name="nick", description="Changes a member's nickname (Placeholder).")
     @app_commands.checks.has_permissions(manage_nicknames=True)
     async def nick_command(self, interaction: discord.Interaction, member: discord.Member, nickname: str):
         embed = create_embed(
             title="✏️ Nickname Changed",
-            description=f"{member.mention}'s nickname set to **{nickname}**. (Placeholder: API call needed)"
+            description=f"Changed {member.mention}'s nickname to **{nickname}**. (Placeholder: Implementation needed)",
+            color=discord.Color.blue()
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         
-    @app_commands.command(name="clearnick", description="Resets a member's nickname (Placeholder).")
-    @app_commands.checks.has_permissions(manage_nicknames=True)
-    async def clearnick_command(self, interaction: discord.Interaction, member: discord.Member):
+    @app_commands.command(name="vcmute", description="Server mutes a member in voice channels (Placeholder).")
+    @app_commands.checks.has_permissions(mute_members=True)
+    async def vcmute_command(self, interaction: discord.Interaction, member: discord.Member):
         embed = create_embed(
-            title="✏️ Nickname Cleared",
-            description=f"{member.mention}'s nickname has been reset."
+            title="🔇 Voice Muted",
+            description=f"Voice muted {member.mention}. (Placeholder: Implementation needed)",
+            color=discord.Color.dark_orange()
         )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="roleinfo", description="Displays detailed information about a role (Placeholder).")
-    async def roleinfo_command(self, interaction: discord.Interaction, role: discord.Role):
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="vcunmute", description="Server unmutes a member in voice channels (Placeholder).")
+    @app_commands.checks.has_permissions(mute_members=True)
+    async def vcunmute_command(self, interaction: discord.Interaction, member: discord.Member):
         embed = create_embed(
-            title=f"🎭 Role Info: {role.name}",
-            description=f"**ID:** `{role.id}`\n**Members:** {len(role.members)}\n**Color:** {role.color}\n**Created:** {role.created_at.strftime('%b %d, %Y')}"
+            title="🔊 Voice Unmuted",
+            description=f"Voice unmuted {member.mention}. (Placeholder: Implementation needed)",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    @app_commands.command(name="vcdeafen", description="Server deafens a member in voice channels (Placeholder).")
+    @app_commands.checks.has_permissions(deafen_members=True)
+    async def vcdeafen_command(self, interaction: discord.Interaction, member: discord.Member):
+        embed = create_embed(
+            title="🔕 Voice Deafened",
+            description=f"Voice deafened {member.mention}. (Placeholder: Implementation needed)",
+            color=discord.Color.dark_orange()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="vcundeafen", description="Server undeafens a member in voice channels (Placeholder).")
+    @app_commands.checks.has_permissions(deafen_members=True)
+    async def vcundeafen_command(self, interaction: discord.Interaction, member: discord.Member):
+        embed = create_embed(
+            title="👂 Voice Undeafened",
+            description=f"Voice undeafened {member.mention}. (Placeholder: Implementation needed)",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="move", description="Moves a member to a different voice channel (Placeholder).")
+    @app_commands.checks.has_permissions(move_members=True)
+    async def move_command(self, interaction: discord.Interaction, member: discord.Member, channel: discord.VoiceChannel):
+        embed = create_embed(
+            title="➡️ Member Moved",
+            description=f"Moved {member.mention} to {channel.mention}. (Placeholder: Implementation needed)",
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    @app_commands.command(name="audit", description="Shows the server's audit log (Placeholder).")
+    @app_commands.checks.has_permissions(view_audit_log=True)
+    async def audit_command(self, interaction: discord.Interaction):
+        embed = create_embed(
+            title="🔎 Audit Log",
+            description="Displaying recent audit log entries. (Placeholder: Log retrieval needed)",
+            color=discord.Color.dark_grey()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="bulkdelete", description="Deletes messages matching a certain criteria (Placeholder).")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def bulkdelete_command(self, interaction: discord.Interaction, user: Optional[discord.Member], count: app_commands.Range[int, 1, 100]):
+        embed = create_embed(
+            title="🧹 Bulk Delete Initiated",
+            description=f"Attempting to delete {count} messages from {'all users' if not user else user.mention}. (Placeholder: Message retrieval needed)",
+            color=discord.Color.dark_red()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="channelinfo", description="Shows detailed information about a specific channel (Placeholder).")
+    async def channelinfo_command(self, interaction: discord.Interaction, channel: Optional[discord.abc.GuildChannel] = None):
+        channel = channel or interaction.channel
+        embed = create_embed(
+            title=f"ℹ️ Channel Info: #{channel.name}",
+            description=f"**ID:** `{channel.id}`\n**Type:** `{str(channel.type).replace('ChannelType.', '')}`\n**Created:** {channel.created_at.strftime('%b %d, %Y')}",
+            color=discord.Color.light_grey()
         )
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(name="voiceinfo", description="Shows who is in a specific voice channel (Placeholder).")
+    async def voiceinfo_command(self, interaction: discord.Interaction, channel: discord.VoiceChannel):
+        members = [member.display_name for member in channel.members]
+        embed = create_embed(
+            title=f"🎤 Voice Info: {channel.name}",
+            description=f"**Users Online:** {len(members)}\n**Members:** {', '.join(members) if members else 'None'}",
+            color=discord.Color.dark_blue()
+        )
+        await interaction.response.send_message(embed=embed)
 
-# --- 3. RUST-THEMED GAME COMMANDS CLASS (25 Commands) ---
+    @app_commands.command(name="temprole", description="Gives a role to a member for a specified time (Placeholder).")
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def temprole_command(self, interaction: discord.Interaction, member: discord.Member, role: discord.Role, duration: str):
+        embed = create_embed(
+            title="⏳ Temporary Role Added",
+            description=f"Gave {role.mention} to {member.mention} for **{duration}**. (Placeholder: Scheduling needed)",
+            color=discord.Color.purple()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    @app_commands.command(name="massrole", description="Adds a role to multiple members (Placeholder).")
+    @app_commands.checks.has_permissions(manage_roles=True)
+    async def massrole_command(self, interaction: discord.Interaction, role: discord.Role, condition: str):
+        embed = create_embed(
+            title="👥 Mass Role Update",
+            description=f"Applying {role.mention} to members matching condition: **{condition}**. (Placeholder: Logic needed)",
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    @app_commands.command(name="logchannel", description="Sets the bot's logging channel (Placeholder).")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def logchannel_command(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        embed = create_embed(
+            title="📝 Log Channel Set",
+            description=f"Bot logs will now be sent to {channel.mention}. (Placeholder: Configuration update needed)",
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+    @app_commands.command(name="welcomechannel", description="Sets the channel for welcome messages (Placeholder).")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def welcomechannel_command(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        embed = create_embed(
+            title="👋 Welcome Channel Set",
+            description=f"Welcome messages will now be sent to {channel.mention}. (Placeholder: Configuration update needed)",
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# --- 3. RUST GAME COMMANDS CLASS (Placeholder) ---
 
 class RustGameCommands(commands.Cog):
     def __init__(self, bot: RDU_BOT):
         self.bot = bot
 
-    @app_commands.command(name="wipe", description="Shows the date and time of the next map wipe (Placeholder).")
+    @app_commands.command(name="wipe", description="Announces and tracks the next Rust wipe time (Placeholder).")
     async def wipe_command(self, interaction: discord.Interaction):
         embed = create_embed(
-            title="🔪 Next Map Wipe",
-            description="The next forced map wipe is **Thursday @ 8PM AEST** (Placeholder: Date calculation/config needed)"
+            title="🔪 Next Wipe",
+            description="The next forced wipe is on **Thurs, Oct 30th** at 5:00 PM AEST. (Placeholder: Dynamic calculation needed)",
+            color=discord.Color.dark_red()
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="bpwipe", description="Shows the date of the next Blueprint wipe (Placeholder).")
-    async def bpwipe_command(self, interaction: discord.Interaction):
+    @app_commands.command(name="server", description="Checks the status of the main RDU Rust server (Placeholder).")
+    async def server_command(self, interaction: discord.Interaction):
         embed = create_embed(
-            title="📜 Next Blueprint Wipe",
-            description="Next BP Wipe: **1st Thursday of the Month** (Placeholder: Date calculation needed)"
+            title="🎮 Server Status",
+            description="**RDU Main:** Online\n**Players:** 150/200\n**Map:** Procedural\n**IP:** `connect 1.1.1.1:28015` (Placeholder: RCON/API needed)",
+            color=discord.Color.dark_green()
         )
         await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="servers", description="Lists all official RDU servers (Placeholder).")
-    async def servers_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="🌐 RDU Servers",
-            description="RDU Main: IP\nRDU Mini: IP\n(Placeholder: Config needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="servermap", description="Shows the current map image for the main server (Placeholder).")
-    async def servermap_command(self, interaction: discord.Interaction):
+        
+    @app_commands.command(name="map", description="Shows the current server map and seed (Placeholder).")
+    async def map_command(self, interaction: discord.Interaction):
         embed = create_embed(
             title="🗺️ Current Map",
-            description="Map image URL here. (Placeholder: External API needed)"
+            description="**Map Seed:** 123456\n**Map Size:** 3500\n[View Map on RustMaps.com](https://placeholder.com) (Placeholder: API needed)",
+            color=discord.Color.dark_green()
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="monuments", description="Lists key monuments on the current map (Placeholder).")
-    async def monuments_command(self, interaction: discord.Interaction):
+    @app_commands.command(name="rules_rust", description="Displays the Rust server-specific rules (Placeholder).")
+    async def rules_rust_command(self, interaction: discord.Interaction):
         embed = create_embed(
-            title="🏛️ Key Monuments",
-            description="Launch Site, Military Tunnels, Oil Rig, etc. (Placeholder: Map API needed)"
+            title="📜 Rust Server Rules",
+            description="1. Max team size of 4. 2. No hacking. 3. No extreme toxicity. (Placeholder: Content needed)",
+            color=discord.Color.red()
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="events", description="Shows the current in-game event schedule (Placeholder).")
-    async def events_command(self, interaction: discord.Interaction):
+    @app_commands.command(name="leaderboard", description="Shows the current leaderboards (Placeholder).")
+    async def leaderboard_command(self, interaction: discord.Interaction, category: str):
         embed = create_embed(
-            title="💥 In-Game Events",
-            description="Air Drop: TBD\nCargo Ship: TBD\n(Placeholder: External API needed)"
+            title=f"🏆 {category.title()} Leaderboard",
+            description="1. PlayerX (100 Kills)\n2. PlayerY (90 Kills) (Placeholder: Database needed)",
+            color=discord.Color.gold()
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="crafting", description="Shows the recipe for a specified item (Placeholder).")
-    async def crafting_command(self, interaction: discord.Interaction, item: str):
-        embed = create_embed(
-            title=f"🛠️ Crafting: {item.title()}",
-            description="Recipe: 50 Metal Fragments, 20 Low Grade Fuel. (Placeholder: Lookup needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="damage", description="Calculates weapon damage against armor (Placeholder).")
-    async def damage_command(self, interaction: discord.Interaction, weapon: str, armor: str):
-        embed = create_embed(
-            title=f"🎯 Damage Calc: {weapon.title()} vs {armor.title()}",
-            description="Headshot: 45 HP. Body Shot: 15 HP. (Placeholder: Calculation needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="resource", description="Checks the best way to farm a resource (Placeholder).")
-    async def resource_command(self, interaction: discord.Interaction, resource: str):
-        embed = create_embed(
-            title=f"⛏️ Farming: {resource.title()}",
-            description="Best Tool: Jackhammer. Best Monument: Quarry. (Placeholder: Lookup needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="teambox", description="Shares a team box code (Placeholder).")
-    async def teambox_command(self, interaction: discord.Interaction, code: str):
-        embed = create_embed(
-            title="📦 Team Box Code",
-            description=f"The team box combination is: `{code}`"
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="market", description="Checks the prices for a marketplace item (Placeholder).")
-    async def market_command(self, interaction: discord.Interaction, item: str):
-        embed = create_embed(
-            title=f"💰 Marketplace: {item.title()}",
-            description="Current price: 100 Scrap. (Placeholder: External API needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="giveaway", description="Starts a Rust item giveaway (Placeholder).")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def giveaway_command(self, interaction: discord.Interaction, item: str, duration: str):
-        embed = create_embed(
-            title="🎁 Giveaway Started!",
-            description=f"React to win **{item}**! Ends in {duration}."
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="kit", description="Displays the contents of a custom kit (Placeholder).")
-    async def kit_command(self, interaction: discord.Interaction, kit_name: str):
-        embed = create_embed(
-            title=f"🎒 Kit: {kit_name.title()}",
-            description="Contents: Full metal gear, AK, Meds. (Placeholder: Config needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="steamid", description="Converts a username to a Steam ID (Placeholder).")
-    async def steamid_command(self, interaction: discord.Interaction, username: str):
-        embed = create_embed(
-            title=f"🆔 Steam ID for {username}",
-            description="Steam ID: `76561198xxxxxxxx` (Placeholder: External API needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="leaderboard", description="Shows the current server leaderboard (Placeholder).")
-    async def leaderboard_command(self, interaction: discord.Interaction, stat: str):
-        embed = create_embed(
-            title=f"🥇 {stat.title()} Leaderboard",
-            description="1. Player X (1000)\n2. Player Y (900)\n(Placeholder: External API needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="pvprate", description="Checks the server's PvP K/D ratio (Placeholder).")
-    async def pvprate_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="⚔️ Server PvP Ratio",
-            description="Server K/D: 1.25 (Placeholder: External API needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="ruleset", description="Displays the rules specific to the Rust server (Placeholder).")
-    async def ruleset_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="📜 Rust Ruleset",
-            description="No toxicity, no cheating, max team size 4. (Placeholder: Config needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="uptimegame", description="Checks the Rust server's current uptime (Placeholder).")
-    async def uptimegame_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="⏰ Rust Server Uptime",
-            description="Running for: 3 days, 15 hours. (Placeholder: External API needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="discordlink", description="Provides the Discord link for the server (Placeholder).")
-    async def discordlink_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="💬 Discord Link",
-            description="[Join our Discord!](https://discord.gg/RDU) (Placeholder: Config needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="shop", description="Provides the link to the Rust store (Placeholder).")
-    async def shop_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="🛒 RDU Shop",
-            description="[Support the Server!](http://shop.rdu.com) (Placeholder: Config needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="teamspeak", description="Provides the Teamspeak details (Placeholder).")
-    async def teamspeak_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="🎙️ Teamspeak Info",
-            description="Address: `ts.rdu.com` (Placeholder: Config needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="patreon", description="Provides the Patreon link (Placeholder).")
-    async def patreon_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="💖 Patreon Support",
-            description="[Support RDU on Patreon!](http://patreon.com/RDU) (Placeholder: Config needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="steamgroup", description="Provides the Steam Group link (Placeholder).")
-    async def steamgroup_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="👥 Steam Group",
-            description="[Join our Steam Group!](http://steamcommunity.com/groups/RDU) (Placeholder: Config needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="twitter", description="Provides the Twitter link (Placeholder).")
-    async def twitter_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="🐦 Twitter",
-            description="[Follow us on Twitter!](http://twitter.com/RDU) (Placeholder: Config needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="youtube", description="Provides the YouTube link (Placeholder).")
-    async def youtube_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="🎥 YouTube",
-            description="[Subscribe on YouTube!](http://youtube.com/RDU) (Placeholder: Config needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-
-# --- 4. FUN COMMANDS CLASS (20 Commands) ---
+# --- 4. FUN COMMANDS CLASS (Placeholder) ---
 
 class FunCommands(commands.Cog):
     def __init__(self, bot: RDU_BOT):
         self.bot = bot
 
-    @app_commands.command(name="roll", description="Rolls a dice with a specified number of sides (Placeholder).")
-    async def roll_command(self, interaction: discord.Interaction, sides: app_commands.Range[int, 2, 100] = 6):
-        result = random.randint(1, sides)
-        embed = create_embed(
-            title="🎲 Dice Roll",
-            description=f"You rolled a **{result}** on a D{sides}."
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="8ball", description="Ask the magic 8-Ball a question (Placeholder).")
+    @app_commands.command(name="8ball", description="Ask the magic 8-Ball a question.")
     async def eightball_command(self, interaction: discord.Interaction, question: str):
-        responses = ["Yes, definitely.", "It is decidedly so.", "Without a doubt.", "Reply hazy, try again.", "Ask again later.", "Don't count on it.", "My sources say no.", "Very doubtful."]
-        response = random.choice(responses)
+        responses = [
+            "It is certain.", "It is decidedly so.", "Without a doubt.", "Yes - definitely.",
+            "You may rely on it.", "As I see it, yes.", "Most likely.", "Outlook good.",
+            "Yes.", "Signs point to yes.", "Reply hazy, try again.", "Ask again later.",
+            "Better not tell you now.", "Cannot predict now.", "Concentrate and ask again.",
+            "Don't count on it.", "My reply is no.", "My sources say no.", "Outlook not so good.", "Very doubtful."
+        ]
         embed = create_embed(
             title="🎱 Magic 8-Ball",
-            description=f"**Q:** {question}\n**A:** {response}"
+            description=f"**Q:** {question}\n**A:** **{random.choice(responses)}**",
+            color=discord.Color.dark_grey()
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="coinflip", description="Flips a coin (Placeholder).")
-    async def coinflip_command(self, interaction: discord.Interaction):
-        result = random.choice(["Heads", "Tails"])
+    @app_commands.command(name="dice", description="Rolls a virtual dice.")
+    async def dice_command(self, interaction: discord.Interaction, sides: app_commands.Range[int, 2, 100]):
+        roll = random.randint(1, sides)
+        embed = create_embed(
+            title="🎲 Dice Roll",
+            description=f"You rolled a **D{sides}** and got: **{roll}**",
+            color=discord.Color.orange()
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="coin", description="Flips a coin.")
+    async def coin_command(self, interaction: discord.Interaction):
+        flip = random.choice(["Heads", "Tails"])
         embed = create_embed(
             title="🪙 Coin Flip",
-            description=f"The coin landed on **{result}**."
+            description=f"The coin landed on: **{flip}**",
+            color=discord.Color.yellow()
         )
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="choose", description="Chooses between multiple options (Placeholder).")
-    async def choose_command(self, interaction: discord.Interaction, options: str):
-        choices = [opt.strip() for opt in options.split(',') if opt.strip()]
-        if len(choices) < 2:
-            result = "Please provide at least two options separated by a comma."
-        else:
-            result = random.choice(choices)
-        embed = create_embed(
-            title="🤔 I Choose...",
-            description=f"I choose **{result}**."
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="hug", description="Gives a virtual hug to a user (Placeholder).")
-    async def hug_command(self, interaction: discord.Interaction, member: discord.Member):
-        embed = create_embed(
-            title="🫂 Hug Time!",
-            description=f"{interaction.user.mention} gives {member.mention} a warm hug!"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="slap", description="Virtually slaps a user (Placeholder).")
-    async def slap_command(self, interaction: discord.Interaction, member: discord.Member):
-        embed = create_embed(
-            title="✋ Slap!",
-            description=f"{interaction.user.mention} slaps {member.mention} across the face!"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="compliment", description="Gives a random compliment (Placeholder).")
-    async def compliment_command(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
-        compliments = ["is awesome!", "has great taste!", "makes the server better!", "is a coding wizard!"]
-        target = member.mention if member else interaction.user.mention
-        embed = create_embed(
-            title="✨ Compliment",
-            description=f"{target} {random.choice(compliments)}"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="dadjoke", description="Tells a terrible dad joke (Placeholder).")
-    async def dadjoke_command(self, interaction: discord.Interaction):
-        jokes = ["I'm afraid for the calendar. Its days are numbered.", "I told my wife she was drawing her eyebrows too high. She looked surprised.", "Why don't scientists trust atoms? Because they make up everything!"]
-        embed = create_embed(
-            title="😂 Dad Joke",
-            description=random.choice(jokes)
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="meme", description="Posts a random meme (Placeholder).")
-    async def meme_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="🖼️ Random Meme",
-            description="Meme image URL here. (Placeholder: Image fetch needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="trivia", description="Starts a trivia game (Placeholder).")
-    async def trivia_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="🧠 Trivia Time",
-            description="Question: What is the capital of Australia? (Placeholder: Game logic needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="scramble", description="Starts a word scramble game (Placeholder).")
-    async def scramble_command(self, interaction: discord.Interaction):
-        embed = create_embed(
-            title="🧩 Word Scramble",
-            description="Unscramble this word: `RUTS` (Placeholder: Game logic needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="fight", description="Starts a virtual fight between two users (Placeholder).")
-    async def fight_command(self, interaction: discord.Interaction, member1: discord.Member, member2: discord.Member):
-        winner = random.choice([member1, member2])
-        embed = create_embed(
-            title="🥊 Fight!",
-            description=f"{member1.mention} and {member2.mention} entered the arena. **{winner.mention}** wins!"
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="rate", description="Rates something on a scale of 1-10 (Placeholder).")
-    async def rate_command(self, interaction: discord.Interaction, thing: str):
-        rating = random.randint(1, 10)
-        embed = create_embed(
-            title="💯 Rating",
-            description=f"I rate **{thing}** a **{rating}/10**."
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="ship", description="Calculates the compatibility between two users (Placeholder).")
+    @app_commands.command(name="ship", description="Calculates the compatibility of two members (Placeholder).")
     async def ship_command(self, interaction: discord.Interaction, member1: discord.Member, member2: discord.Member):
-        compatibility = random.randint(1, 100)
+        compatibility = random.randint(0, 100)
         embed = create_embed(
-            title="💘 Shipping",
-            description=f"**{member1.display_name}** and **{member2.display_name}** are **{compatibility}%** compatible!"
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="praise", description="Praises the bot (Placeholder).")
-    async def praise_command(self, interaction: discord.Interaction):
-        responses = ["Thank you! You're too kind.", "I live to serve.", "Praise accepted!"]
-        embed = create_embed(
-            title="😇 Praise",
-            description=random.choice(responses)
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="roast", description="Roasts a user with a joke (Placeholder).")
-    async def roast_command(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
-        target = member.mention if member else "you"
-        roasts = [f"{target} must have been born on a highway, because that's where most accidents happen.", f"I've had better arguments with a vending machine than with {target}.", f"{target}'s brain is 90% song lyrics and 10% trying to remember where they parked."]
-        embed = create_embed(
-            title="🔥 Roast",
-            description=random.choice(roasts)
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="gif", description="Searches for a random GIF (Placeholder).")
-    async def gif_command(self, interaction: discord.Interaction, search: str):
-        embed = create_embed(
-            title=f"🎬 GIF for '{search}'",
-            description="GIF URL here. (Placeholder: External API needed)"
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="wyr", description="Ask a 'Would You Rather?' question (Placeholder).")
-    async def wyr_command(self, interaction: discord.Interaction):
-        questions = ["Would you rather be able to talk to animals or speak all foreign languages?", "Would you rather fight 100 duck-sized horses or one horse-sized duck?"]
-        embed = create_embed(
-            title="🤔 Would You Rather...",
-            description=random.choice(questions)
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="unpopularopinion", description="Share an unpopular opinion anonymously (Placeholder).")
-    async def unpopularopinion_command(self, interaction: discord.Interaction, opinion: str):
-        embed = create_embed(
-            title="📢 Unpopular Opinion",
-            description=f"**Submitted by:** Anonymous\n\n> {opinion}",
-            color=discord.Color.dark_orange()
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="confess", description="Submit an anonymous confession (Placeholder).")
-    async def confess_command(self, interaction: discord.Interaction, confession: str):
-        embed = create_embed(
-            title="🤫 Anonymous Confession",
-            description=f"> {confession}",
-            color=discord.Color.light_grey()
+            title="💘 Ship Calculator",
+            description=f"**{member1.display_name}** and **{member2.display_name}** are **{compatibility}%** compatible!",
+            color=discord.Color.magenta()
         )
         await interaction.response.send_message(embed=embed)
 
 
-# --- RUN BLOCK ---
-
-if __name__ == '__main__':
-    try:
-        logger.info("Starting bot...")
-        token = os.getenv('DISCORD_BOT_TOKEN') or os.getenv('TOKEN')
-        if not token:
-            logger.error("Token missing. Cannot run.")
-
-        bot = RDU_BOT()
-        bot.run(token)
-    except discord.errors.LoginFailure:
-        logger.error("Failed to log in. Check your DISCORD_BOT_TOKEN.")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during bot execution: {e}")
+# --- BOT EXECUTION ---
+if __name__ == "__main__":
+    if DISCORD_TOKEN:
+        try:
+            bot = RDU_BOT()
+            bot.run(DISCORD_TOKEN)
+        except discord.LoginFailure:
+            logger.critical("❌ Login Failure: The Discord token is invalid or incorrect.")
+            sys.exit(1)
+        except Exception as e:
+            logger.critical(f"❌ Unhandled critical error: {e}")
+            sys.exit(1)
+    else:
+        sys.exit(1)
