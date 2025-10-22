@@ -1,7 +1,12 @@
 import os
 import discord
 from discord.ext import commands
-from discord import app_commands, utils, VoiceClient, sinks
+from discord import app_commands, utils, VoiceClient
+# --- CORRECTED IMPORT ---
+# Using the recommended method to access the sinks module from the Pycord fork
+import discord.sinks as sinks 
+# ------------------------
+
 import logging
 from datetime import datetime, timedelta
 import asyncio
@@ -12,10 +17,8 @@ from typing import Optional
 # --- CONFIGURATION ---
 
 # IMPORTANT: You must set your bot token in your environment variables.
-# For example, on Linux/macOS: export DISCORD_BOT_TOKEN="YOUR_TOKEN_HERE"
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN') or os.getenv('TOKEN')
 if not DISCORD_TOKEN:
-    # A simple way to alert the user if the token is missing
     print("FATAL ERROR: Discord bot token not found in environment variables.")
     exit()
 
