@@ -561,8 +561,8 @@ class FunCommands(commands.Cog):
     async def servericon_command(self, interaction: discord.Interaction):
         await interaction.response.send_message("Server icon displayed (Simulated).", ephemeral=False)
 
-    @app_commands.command(name="translate", description="Translates text using a placeholder service.")
-    async def placeholder_translate_command(self, interaction: discord.Interaction, text: str, target_lang: str):
+    @app_commands.command(name="langtranslate", description="Translates text using a placeholder service (Fun/Utility).")
+    async def langtranslate_command(self, interaction: discord.Interaction, text: str, target_lang: str):
         await interaction.response.send_message(f"'{text}' translated to '{target_lang}' (Placeholder).", ephemeral=False)
 
     @app_commands.command(name="define", description="Provides a dictionary definition for a word.")
