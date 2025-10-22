@@ -49,9 +49,23 @@ async def on_ready():
     except Exception as e:
         print(f'Failed to sync commands: {e}')
 
-# --- CORE COMMAND: HELP (ULTIMATE ROBUST FIX) ---
+# ----------------------------------------------------
+# 🌟 CORE COMMANDS LIST (For the focused /help output)
+# ----------------------------------------------------
 
-@bot.tree.command(name="help", description="Shows a list of commands you have permission to use. (Ephemeral/30s)")
+CORE_COMMANDS = {
+    # Utility/Core
+    "ping", "userinfo", "serverinfo", "uptime",
+    # Rust/Game
+    "wipe", "status", "map", "rules", 
+    # Moderation (Essential for staff to see quickly)
+    "kick", "tempmute" 
+}
+
+
+# --- CORE COMMAND: HELP (OPTIMIZED) ---
+
+@bot.tree.command(name="help", description="Shows the most important commands you can use. (Ephemeral/30s)")
 async def help_command(interaction: discord.Interaction):
     if not interaction.guild:
         await interaction.response.send_message("This command only works in servers!", ephemeral=True)
@@ -63,13 +77,17 @@ async def help_command(interaction: discord.Interaction):
     
     for command in bot.tree.walk_commands():
         
-        # FINAL FIX: Explicitly check if the object is a modern slash command 
-        # and has the internal check list before trying to access it.
+        # 1. Skip commands not in the CORE_COMMANDS list
+        if command.name not in CORE_COMMANDS:
+            continue
+            
+        # 2. Robust check for command object integrity (prevents the AttributeError)
         if not isinstance(command, app_commands.Command) or not hasattr(command, '_checks'):
             continue
 
         is_allowed = True
         
+        # 3. Check permissions
         if command._checks:
             for check in command._checks:
                 try:
@@ -79,20 +97,21 @@ async def help_command(interaction: discord.Interaction):
                     break
         
         if is_allowed:
+            # Add the command, categorizing the list by name for easy reading
             allowed_commands.append(f"`/{command.name}` - {command.description}")
 
     if allowed_commands:
         commands_list = "\n".join(sorted(allowed_commands))
         embed = discord.Embed(
-            title="Aussie RDU Bot Commands 🇦🇺",
-            description=f"**Commands you can use in {interaction.guild.name}:**\n\n{commands_list}",
+            title="Aussie RDU Bot Essential Commands 🇦🇺",
+            description=f"**The most essential commands you can use:**\n\n{commands_list}",
             color=discord.Color.gold()
         )
-        embed.set_footer(text="This message is only visible to you and will self-dismiss after a short period (30s).")
+        embed.set_footer(text="Only essential commands are shown. This message is only visible to you and will self-dismiss after 30s.")
     else:
         embed = discord.Embed(
             title="No Commands Available",
-            description="You do not currently have permission to use any commands.",
+            description="You do not currently have permission to use any essential commands.",
             color=discord.Color.red()
         )
         embed.set_footer(text="This message is only visible to you and will self-dismiss after a short period (30s).")
