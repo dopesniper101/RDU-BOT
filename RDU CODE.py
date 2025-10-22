@@ -1,6 +1,3 @@
-# ==============================================================================
-# 📝 RDU CODE.py Content (For GitHub) - FINAL ROBUST FIX
-# ==============================================================================
 import os
 import discord
 from discord.ext import commands
@@ -27,7 +24,11 @@ intents.message_content = True
 intents.members = True
 intents.guilds = True
 
+# Ensure help_command=None is present and initialize bot
 bot = commands.Bot(command_prefix='!', intents=intents, description=DESCRIPTION, help_command=None)
+bot.start_time = datetime.now() # Initialize bot start time
+
+# --- UTILITY FUNCTIONS ---
 
 async def send_log_embed(guild, embed):
     log_channel = discord.utils.get(guild.channels, name=LOG_CHANNEL_NAME)
@@ -37,15 +38,18 @@ async def send_log_embed(guild, embed):
         except Exception:
             pass
 
+# --- BOT EVENTS ---
+
 @bot.event
 async def on_ready():
+    print(f'{BOT_NAME} is now online!')
     try:
         synced = await bot.tree.sync()
         print(f'Synced {len(synced)} command(s)')
-    except Exception:
-        pass
+    except Exception as e:
+        print(f'Failed to sync commands: {e}')
 
-# --- CORE COMMAND: HELP (FINAL ROBUST FIX) ---
+# --- CORE COMMAND: HELP (ULTIMATE ROBUST FIX) ---
 
 @bot.tree.command(name="help", description="Shows a list of commands you have permission to use. (Ephemeral/30s)")
 async def help_command(interaction: discord.Interaction):
@@ -58,13 +62,14 @@ async def help_command(interaction: discord.Interaction):
     allowed_commands = []
     
     for command in bot.tree.walk_commands():
-        # FIX: Explicitly ensure the object is a proper app command instance before checking attributes.
-        if not isinstance(command, app_commands.Command):
+        
+        # FINAL FIX: Explicitly check if the object is a modern slash command 
+        # and has the internal check list before trying to access it.
+        if not isinstance(command, app_commands.Command) or not hasattr(command, '_checks'):
             continue
 
         is_allowed = True
         
-        # Now we know it's a slash command, so it safely has the _checks attribute
         if command._checks:
             for check in command._checks:
                 try:
@@ -95,7 +100,7 @@ async def help_command(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 # ----------------------------------------------------
-# 🛡️ MODERATION COMMANDS (Remaining commands unchanged)
+# 🛡️ MODERATION COMMANDS (10)
 # ----------------------------------------------------
 
 @bot.tree.command(name="warn", description="Issue a formal warning to a user")
@@ -161,7 +166,8 @@ async def clear(interaction: discord.Interaction, amount: app_commands.Range[int
 async def tempmute(interaction: discord.Interaction, user: discord.Member, duration_minutes: app_commands.Range[int, 1, 1440], reason: str):
     if not interaction.guild: return
     try:
-        duration = discord.utils.timedelta(minutes=duration_minutes)
+        # Use discord.utils.timedelta for correct usage
+        duration = discord.utils.timedelta(minutes=duration_minutes) 
         await user.timeout(duration, reason=f"Timed out by {interaction.user.display_name}: {reason}")
         embed = discord.Embed(title="🔇 User Muted", description=f"{user.mention} has been muted for {duration_minutes} minutes.", color=discord.Color.dark_gray())
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -243,7 +249,7 @@ async def removerole(interaction: discord.Interaction, user: discord.Member, rol
         await interaction.response.send_message("❌ I don't have permission to remove that role.", ephemeral=True)
 
 # ----------------------------------------------------
-# 🔧 UTILITY COMMANDS (Remaining commands unchanged)
+# 🔧 UTILITY COMMANDS (10)
 # ----------------------------------------------------
 
 @bot.tree.command(name="ping", description="Shows the bot's latency")
@@ -359,8 +365,6 @@ async def roleinfo(interaction: discord.Interaction, role: discord.Role):
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-bot.start_time = datetime.now()
-
 @bot.tree.command(name="uptime", description="Shows how long the bot has been running")
 async def uptime(interaction: discord.Interaction):
     delta = datetime.now() - bot.start_time
@@ -372,13 +376,14 @@ async def uptime(interaction: discord.Interaction):
     embed = discord.Embed(title="⏰ Bot Uptime", description=f"The bot has been running for: **{time_str}**", color=discord.Color.green())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+
 # ----------------------------------------------------
-# ⛏️ RUST/GAME COMMANDS (Remaining commands unchanged)
+# ⛏️ RUST/GAME COMMANDS (14)
 # ----------------------------------------------------
 
 @bot.tree.command(name="wipe", description="Shows the next expected server wipe time")
 async def wipe(interaction: discord.Interaction):
-    next_wipe = datetime(2025, 12, 5, 0, 0)
+    next_wipe = datetime(2025, 12, 5, 0, 0) # Placeholder: Dec 5, 2025
     time_remaining = next_wipe - datetime.now()
     
     if time_remaining.total_seconds() < 0:
@@ -479,6 +484,7 @@ async def report(interaction: discord.Interaction, player_name: str, reason: str
         report_embed.add_field(name="Reason", value=reason, inline=False)
         report_embed.add_field(name="Reported By", value=interaction.user.mention, inline=False)
         
+        # NOTE: Replace <@&Your_Mod_Role_ID> with the actual ID of your moderator role
         await mod_channel.send(f"**<@&Your_Mod_Role_ID>**", embed=report_embed)
         await interaction.response.send_message("✅ Your report has been submitted to the moderation team. Thank you!", ephemeral=True)
     else:
