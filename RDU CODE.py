@@ -91,6 +91,7 @@ async def help_command(interaction: discord.Interaction):
         if command._checks:
             for check in command._checks:
                 try:
+                    # Execute the check with the interaction object
                     await discord.utils.maybe_coroutine(check, interaction)
                 except (app_commands.MissingPermissions, app_commands.CheckFailure):
                     is_allowed = False
@@ -160,8 +161,10 @@ async def ban(interaction: discord.Interaction, user: discord.Member, reason: st
         return
     try:
         await user.ban(reason=f"Banned by {interaction.user.display_name}: {reason}")
-        await interaction.response.send_message(embed=discord.Embed(title="✅ User Banned", description=f"{user.mention} has been banned.", color=discord.Color.dark_red()))
-        log_embed = discord.Embed(title="🚫 Member Banned", description=f"**User:** {user.mention}\n**Moderator:** {interaction.user.mention}\n**Reason:** {reason}", color=discord.Color.dark_red())
+        # Standardized to use dark_red()
+        await interaction.response.send_message(embed=discord.Embed(title="✅ User Banned", description=f"{user.mention} has been banned.", color=discord.Color.dark_red())) 
+        # Standardized to use dark_red()
+        log_embed = discord.Embed(title="🚫 Member Banned", description=f"**User:** {user.mention}\n**Moderator:** {interaction.user.mention}\n**Reason:** {reason}", color=discord.Color.dark_red()) 
         await send_log_embed(interaction.guild, log_embed)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to ban this user!", ephemeral=True)
@@ -175,8 +178,8 @@ async def clear(interaction: discord.Interaction, amount: app_commands.Range[int
     await interaction.response.defer(ephemeral=True)
     deleted = await interaction.channel.purge(limit=amount)
     embed = discord.Embed(title="🧹 Messages Cleared", description=f"Successfully deleted **{len(deleted)}** messages.", color=discord.Color.orange())
-    await interaction.followup.send(embed=embed, ephemeral=True)
     log_embed = discord.Embed(title="🗑️ Messages Purged", description=f"**Channel:** {interaction.channel.mention}\n**Moderator:** {interaction.user.mention}\n**Amount:** {len(deleted)}", color=discord.Color.gold())
+    await interaction.followup.send(embed=embed, ephemeral=True)
     await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="tempmute", description="Mute a user for a specified duration")
@@ -188,9 +191,11 @@ async def tempmute(interaction: discord.Interaction, user: discord.Member, durat
         # Use discord.utils.timedelta for correct usage
         duration = discord.utils.timedelta(minutes=duration_minutes) 
         await user.timeout(duration, reason=f"Timed out by {interaction.user.display_name}: {reason}")
-        embed = discord.Embed(title="🔇 User Muted", description=f"{user.mention} has been muted for {duration_minutes} minutes.", color=discord.Color.dark_gray())
+        # Standardized to use dark_grey()
+        embed = discord.Embed(title="🔇 User Muted", description=f"{user.mention} has been muted for {duration_minutes} minutes.", color=discord.Color.dark_grey()) 
         await interaction.response.send_message(embed=embed, ephemeral=True)
-        log_embed = discord.Embed(title="🕒 Member Timed Out", description=f"**User:** {user.mention}\n**Moderator:** {interaction.user.mention}\n**Duration:** {duration_minutes}m\n**Reason:** {reason}", color=discord.Color.dark_gray())
+        # Standardized to use dark_grey()
+        log_embed = discord.Embed(title="🕒 Member Timed Out", description=f"**User:** {user.mention}\n**Moderator:** {interaction.user.mention}\n**Duration:** {duration_minutes}m\n**Reason:** {reason}", color=discord.Color.dark_grey()) 
         await send_log_embed(interaction.guild, log_embed)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to mute this user!", ephemeral=True)
@@ -239,8 +244,8 @@ async def slowmode(interaction: discord.Interaction, seconds: app_commands.Range
     else:
         msg = f"✅ Slowmode set to **{seconds}** seconds."
     await interaction.response.send_message(msg, ephemeral=True)
-    log_embed = discord.Embed(title="⏳ Slowmode Updated", description=f"**Channel:** {interaction.channel.mention}\n**Delay:** {seconds}s\n**Moderator:** {interaction.user.mention}\n**Reason:** {reason}", color=discord.Color.blue())
-    await send_log_embed(interaction.guild, log_embed)
+    embed = discord.Embed(title="⏳ Slowmode Updated", description=f"**Channel:** {interaction.channel.mention}\n**Delay:** {seconds}s\n**Moderator:** {interaction.user.mention}\n**Reason:** {reason}", color=discord.Color.blue())
+    await send_log_embed(interaction.guild, embed)
 
 @bot.tree.command(name="addrole", description="Assign a role to a user")
 @app_commands.describe(user="The user to modify", role="The role to assign")
@@ -402,7 +407,8 @@ async def uptime(interaction: discord.Interaction):
 
 @bot.tree.command(name="wipe", description="Shows the next expected server wipe time")
 async def wipe(interaction: discord.Interaction):
-    next_wipe = datetime(2025, 12, 5, 0, 0) # Placeholder: Dec 5, 2025
+    # This date needs to be updated with your actual next wipe date
+    next_wipe = datetime(2025, 12, 5, 0, 0) 
     time_remaining = next_wipe - datetime.now()
     
     if time_remaining.total_seconds() < 0:
@@ -485,6 +491,7 @@ async def rules(interaction: discord.Interaction):
 
 @bot.tree.command(name="trade", description="Announces a trade in the trade channel")
 async def trade(interaction: discord.Interaction):
+    # NOTE: You'll need to update 'trade-channel' to your actual trade channel name
     if interaction.channel.name != "trade-channel":
         await interaction.response.send_message("❌ This command should only be used in the #trade-channel.", ephemeral=True)
         return
@@ -495,6 +502,7 @@ async def trade(interaction: discord.Interaction):
 @bot.tree.command(name="report", description="Report a player to the moderation team")
 @app_commands.describe(player_name="The name of the player to report", reason="Reason for the report")
 async def report(interaction: discord.Interaction, player_name: str, reason: str):
+    # NOTE: You'll need to update 'mod-reports' to your actual report channel name
     mod_channel = discord.utils.get(interaction.guild.channels, name="mod-reports")
     
     if mod_channel:
@@ -518,7 +526,8 @@ async def rustlore(interaction: discord.Interaction):
         "The hot air balloon was originally designed for observation, not travel.",
         "The Rust world is a simulation or experiment (fan theory)."
     ]
-    embed = discord.Embed(title="📖 RUST Lore Snippet", description=random.choice(lore), color=discord.Color.dark_gold())
+    # FIX: Replaced discord.Color.dark_gold with standard gold()
+    embed = discord.Embed(title="📖 RUST Lore Snippet", description=random.choice(lore), color=discord.Color.gold())
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="bestresource", description="Tells you the best spot to farm a resource")
@@ -536,7 +545,8 @@ async def bestresource(interaction: discord.Interaction, resource: app_commands.
         "wood": "Use a chainsaw in the heavy forest areas near the water.",
         "sulfur": "The snow biome is the best place to find high-yield sulfur nodes."
     }
-    embed = discord.Embed(title=f"⛏️ Best {resource.name} Farm Spot", description=resource_info[resource.value], color=discord.Color.brown())
+    # FIX: Replaced discord.Color.brown with a hex color (from_rgb) as it's not a standard name
+    embed = discord.Embed(title=f"⛏️ Best {resource.name} Farm Spot", description=resource_info[resource.value], color=discord.Color.from_rgb(165, 42, 42)) 
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="wipetype", description="Explains the types of RUST server wipes")
@@ -561,13 +571,15 @@ async def team_limit(interaction: discord.Interaction):
 async def random_monument(interaction: discord.Interaction):
     monuments = ["Launch Site", "Oil Rig", "Water Treatment Plant", "Train Yard", "Bandit Camp", "Outpost"]
     choice = random.choice(monuments)
-    embed = discord.Embed(title="🧭 Random Monument", description=f"Your starting monument suggestion is: **{choice}**", color=discord.Color.gray())
+    # FIX: Replaced discord.Color.gray with standard light_grey()
+    embed = discord.Embed(title="🧭 Random Monument", description=f"Your starting monument suggestion is: **{choice}**", color=discord.Color.light_grey()) 
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="time", description="Shows the current server time (real-world time)")
 async def server_time(interaction: discord.Interaction):
     current_time = datetime.now().strftime("%I:%M:%S %p %Z")
-    embed = discord.Embed(title="⏳ Current Server Time", description=f"The current real-world server time is **{current_time} AEDT**.", color=discord.Color.dark_purple())
+    # Standardized to use dark_purple()
+    embed = discord.Embed(title="⏳ Current Server Time", description=f"The current real-world server time is **{current_time} AEDT**.", color=discord.Color.dark_purple()) 
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="baseadvice", description="Get a quick tip for base building")
@@ -579,7 +591,8 @@ async def baseadvice(interaction: discord.Interaction):
         "Never leave a clear sightline from outside to your tool cupboard.",
         "Spread loot across multiple compartments/rooms."
     ]
-    embed = discord.Embed(title="🧱 Base Building Advice", description=random.choice(advice), color=discord.Color.gray())
+    # FIX: Replaced discord.Color.gray with standard light_grey()
+    embed = discord.Embed(title="🧱 Base Building Advice", description=random.choice(advice), color=discord.Color.light_grey()) 
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="weapontier", description="Shows the general tier list of RUST weapons")
@@ -623,7 +636,23 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         else:
              await interaction.response.send_message(embed=embed, ephemeral=True)
     else:
-        logger.error(f"Unhandled command error in {interaction.command.name}: {error}")
+        # Catch and log all other errors
+        logger.error(f"Unhandled command error in {interaction.command.name}: {error.__class__.__name__}: {error}")
+        
+        # Send a generic error message back to the user
+        try:
+            embed = discord.Embed(
+                title="⚠️ Command Error",
+                description=f"An unexpected error occurred while running `/{interaction.command.name}`. The developer has been notified.",
+                color=discord.Color.red()
+            )
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception:
+            # Fallback if sending the embed fails
+            pass
         
 try:
     bot.run(DISCORD_TOKEN)
