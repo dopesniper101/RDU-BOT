@@ -31,11 +31,13 @@ bot.start_time = datetime.now() # Initialize bot start time
 # --- UTILITY FUNCTIONS ---
 
 async def send_log_embed(guild, embed):
+    """Finds the bot-logs channel and sends the provided embed."""
     log_channel = discord.utils.get(guild.channels, name=LOG_CHANNEL_NAME)
     if log_channel:
         try:
             await log_channel.send(embed=embed)
         except Exception:
+            # Silently fail if the bot can't send the log (e.g., permissions)
             pass
 
 # --- BOT EVENTS ---
@@ -43,6 +45,18 @@ async def send_log_embed(guild, embed):
 @bot.event
 async def on_ready():
     print(f'{BOT_NAME} is now online!')
+    
+    # 🌟 NEW LOG: Bot Startup
+    for guild in bot.guilds:
+        startup_embed = discord.Embed(
+            title="✅ Bot Status: Online",
+            description=f"{BOT_NAME} has successfully started and is active.",
+            color=discord.Color.green()
+        )
+        startup_embed.add_field(name="Synced Commands", value=f"{len(bot.tree.get_commands())} command(s)")
+        startup_embed.add_field(name="Start Time", value=datetime.now().strftime("%Y-%m-%d %H:%M:%S AEDT"))
+        await send_log_embed(guild, startup_embed)
+        
     try:
         synced = await bot.tree.sync()
         print(f'Synced {len(synced)} command(s)')
@@ -129,10 +143,13 @@ async def help_command(interaction: discord.Interaction):
 async def warn(interaction: discord.Interaction, user: discord.Member, reason: str):
     if not interaction.guild: return
     
+    # Send response
     embed = discord.Embed(title="⚠️ User Warned", description=f"{user.mention} has received a formal warning.", color=discord.Color.orange())
     embed.add_field(name="Reason", value=reason, inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
-    log_embed = discord.Embed(title="⚠️ User Warned", description=f"**User:** {user.mention}\n**Moderator:** {interaction.user.mention}\n**Reason:** {reason}", color=discord.Color.orange())
+    
+    # Log to channel
+    log_embed = discord.Embed(title="⚠️ User Warned", description=f"**User:** {user.mention} (ID: `{user.id}`)\n**Moderator:** {interaction.user.mention}\n**Reason:** {reason}", color=discord.Color.orange())
     await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="kick", description="Kick a user from the server")
@@ -146,7 +163,9 @@ async def kick(interaction: discord.Interaction, user: discord.Member, reason: s
     try:
         await user.kick(reason=f"Kicked by {interaction.user.display_name}: {reason}")
         await interaction.response.send_message(embed=discord.Embed(title="✅ User Kicked", description=f"{user.mention} has been kicked.", color=discord.Color.red()))
-        log_embed = discord.Embed(title="🔨 Member Kicked", description=f"**User:** {user.mention}\n**Moderator:** {interaction.user.mention}\n**Reason:** {reason}", color=discord.Color.red())
+        
+        # Log to channel
+        log_embed = discord.Embed(title="🔨 Member Kicked", description=f"**User:** {user.mention} (ID: `{user.id}`)\n**Moderator:** {interaction.user.mention}\n**Reason:** {reason}", color=discord.Color.red())
         await send_log_embed(interaction.guild, log_embed)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to kick this user!", ephemeral=True)
@@ -161,10 +180,10 @@ async def ban(interaction: discord.Interaction, user: discord.Member, reason: st
         return
     try:
         await user.ban(reason=f"Banned by {interaction.user.display_name}: {reason}")
-        # Standardized to use dark_red()
         await interaction.response.send_message(embed=discord.Embed(title="✅ User Banned", description=f"{user.mention} has been banned.", color=discord.Color.dark_red())) 
-        # Standardized to use dark_red()
-        log_embed = discord.Embed(title="🚫 Member Banned", description=f"**User:** {user.mention}\n**Moderator:** {interaction.user.mention}\n**Reason:** {reason}", color=discord.Color.dark_red()) 
+        
+        # Log to channel
+        log_embed = discord.Embed(title="🚫 Member Banned", description=f"**User:** {user.mention} (ID: `{user.id}`)\n**Moderator:** {interaction.user.mention}\n**Reason:** {reason}", color=discord.Color.dark_red()) 
         await send_log_embed(interaction.guild, log_embed)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to ban this user!", ephemeral=True)
@@ -177,9 +196,11 @@ async def clear(interaction: discord.Interaction, amount: app_commands.Range[int
         
     await interaction.response.defer(ephemeral=True)
     deleted = await interaction.channel.purge(limit=amount)
-    embed = discord.Embed(title="🧹 Messages Cleared", description=f"Successfully deleted **{len(deleted)}** messages.", color=discord.Color.orange())
-    log_embed = discord.Embed(title="🗑️ Messages Purged", description=f"**Channel:** {interaction.channel.mention}\n**Moderator:** {interaction.user.mention}\n**Amount:** {len(deleted)}", color=discord.Color.gold())
+    embed = discord.Embed(title="🧹 Messages Cleared", description=f"Successfully deleted **{len(deleted)}** messages in {interaction.channel.mention}.", color=discord.Color.orange())
     await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    # Log to channel
+    log_embed = discord.Embed(title="🗑️ Messages Purged", description=f"**Channel:** {interaction.channel.mention}\n**Moderator:** {interaction.user.mention}\n**Amount:** {len(deleted)}", color=discord.Color.gold())
     await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="tempmute", description="Mute a user for a specified duration")
@@ -188,14 +209,13 @@ async def clear(interaction: discord.Interaction, amount: app_commands.Range[int
 async def tempmute(interaction: discord.Interaction, user: discord.Member, duration_minutes: app_commands.Range[int, 1, 1440], reason: str):
     if not interaction.guild: return
     try:
-        # Use discord.utils.timedelta for correct usage
         duration = discord.utils.timedelta(minutes=duration_minutes) 
         await user.timeout(duration, reason=f"Timed out by {interaction.user.display_name}: {reason}")
-        # Standardized to use dark_grey()
-        embed = discord.Embed(title="🔇 User Muted", description=f"{user.mention} has been muted for {duration_minutes} minutes.", color=discord.Color.dark_grey()) 
+        embed = discord.Embed(title="🔇 User Muted", description=f"{user.mention} has been muted for **{duration_minutes} minutes**.", color=discord.Color.dark_grey()) 
         await interaction.response.send_message(embed=embed, ephemeral=True)
-        # Standardized to use dark_grey()
-        log_embed = discord.Embed(title="🕒 Member Timed Out", description=f"**User:** {user.mention}\n**Moderator:** {interaction.user.mention}\n**Duration:** {duration_minutes}m\n**Reason:** {reason}", color=discord.Color.dark_grey()) 
+        
+        # Log to channel
+        log_embed = discord.Embed(title="🕒 Member Timed Out", description=f"**User:** {user.mention} (ID: `{user.id}`)\n**Moderator:** {interaction.user.mention}\n**Duration:** {duration_minutes}m\n**Reason:** {reason}", color=discord.Color.dark_grey()) 
         await send_log_embed(interaction.guild, log_embed)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to mute this user!", ephemeral=True)
@@ -209,7 +229,9 @@ async def unmute(interaction: discord.Interaction, user: discord.Member):
         await user.timeout(None)
         embed = discord.Embed(title="🔊 User Unmuted", description=f"{user.mention} has been unmuted.", color=discord.Color.green())
         await interaction.response.send_message(embed=embed, ephemeral=True)
-        log_embed = discord.Embed(title="✅ Member Untimed Out", description=f"**User:** {user.mention}\n**Moderator:** {interaction.user.mention}", color=discord.Color.green())
+        
+        # Log to channel
+        log_embed = discord.Embed(title="✅ Member Untimed Out", description=f"**User:** {user.mention} (ID: `{user.id}`)\n**Moderator:** {interaction.user.mention}", color=discord.Color.green())
         await send_log_embed(interaction.guild, log_embed)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to unmute this user!", ephemeral=True)
@@ -224,7 +246,9 @@ async def unban(interaction: discord.Interaction, user_id: str):
         await interaction.guild.unban(user)
         embed = discord.Embed(title="✅ User Unbanned", description=f"User ID **{user_id}** has been unbanned.", color=discord.Color.green())
         await interaction.response.send_message(embed=embed, ephemeral=True)
-        log_embed = discord.Embed(title="🔓 Member Unbanned", description=f"**User ID:** {user_id}\n**Moderator:** {interaction.user.mention}", color=discord.Color.green())
+        
+        # Log to channel
+        log_embed = discord.Embed(title="🔓 Member Unbanned", description=f"**User ID:** `{user_id}`\n**Moderator:** {interaction.user.mention}", color=discord.Color.green())
         await send_log_embed(interaction.guild, log_embed)
     except discord.NotFound:
         await interaction.response.send_message("❌ User ID not found in the ban list.", ephemeral=True)
@@ -244,8 +268,10 @@ async def slowmode(interaction: discord.Interaction, seconds: app_commands.Range
     else:
         msg = f"✅ Slowmode set to **{seconds}** seconds."
     await interaction.response.send_message(msg, ephemeral=True)
-    embed = discord.Embed(title="⏳ Slowmode Updated", description=f"**Channel:** {interaction.channel.mention}\n**Delay:** {seconds}s\n**Moderator:** {interaction.user.mention}\n**Reason:** {reason}", color=discord.Color.blue())
-    await send_log_embed(interaction.guild, embed)
+    
+    # Log to channel
+    log_embed = discord.Embed(title="⏳ Slowmode Updated", description=f"**Channel:** {interaction.channel.mention}\n**Delay:** {seconds}s\n**Moderator:** {interaction.user.mention}\n**Reason:** {reason}", color=discord.Color.blue())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="addrole", description="Assign a role to a user")
 @app_commands.describe(user="The user to modify", role="The role to assign")
@@ -258,6 +284,10 @@ async def addrole(interaction: discord.Interaction, user: discord.Member, role: 
     try:
         await user.add_roles(role)
         await interaction.response.send_message(f"✅ Assigned role {role.mention} to {user.mention}.", ephemeral=True)
+        
+        # Log to channel
+        log_embed = discord.Embed(title="➕ Role Added", description=f"**User:** {user.mention} (ID: `{user.id}`)\n**Role:** {role.mention}\n**Moderator:** {interaction.user.mention}", color=discord.Color.dark_green())
+        await send_log_embed(interaction.guild, log_embed)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to assign that role.", ephemeral=True)
 
@@ -269,6 +299,10 @@ async def removerole(interaction: discord.Interaction, user: discord.Member, rol
     try:
         await user.remove_roles(role)
         await interaction.response.send_message(f"✅ Removed role {role.mention} from {user.mention}.", ephemeral=True)
+        
+        # Log to channel
+        log_embed = discord.Embed(title="➖ Role Removed", description=f"**User:** {user.mention} (ID: `{user.id}`)\n**Role:** {role.mention}\n**Moderator:** {interaction.user.mention}", color=discord.Color.dark_red())
+        await send_log_embed(interaction.guild, log_embed)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to remove that role.", ephemeral=True)
 
@@ -280,6 +314,10 @@ async def removerole(interaction: discord.Interaction, user: discord.Member, rol
 async def ping(interaction: discord.Interaction):
     latency = round(bot.latency * 1000)
     await interaction.response.send_message(f"🏓 Pong! Latency is **{latency}ms**.")
+    # 🌟 LOG: Ping command used (Low detail)
+    log_embed = discord.Embed(description=f"Ping command used by {interaction.user.mention} in {interaction.channel.mention}. Latency: {latency}ms.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
+
 
 @bot.tree.command(name="userinfo", description="Get information about a server member")
 @app_commands.describe(user="The member to inspect (optional)")
@@ -296,6 +334,9 @@ async def userinfo(interaction: discord.Interaction, user: discord.Member = None
     embed.add_field(name="Bot?", value="Yes" if user.bot else "No", inline=True)
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
+    # 🌟 LOG: Userinfo command used (Low detail)
+    log_embed = discord.Embed(description=f"Userinfo command used by {interaction.user.mention} on {user.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="serverinfo", description="Get information about the current server")
 async def serverinfo(interaction: discord.Interaction):
@@ -314,6 +355,9 @@ async def serverinfo(interaction: discord.Interaction):
     embed.add_field(name="Verification Level", value=str(guild.verification_level).capitalize(), inline=True)
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
+    # 🌟 LOG: Serverinfo command used
+    log_embed = discord.Embed(description=f"Serverinfo command used by {interaction.user.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="avatar", description="Get a user's avatar image")
 @app_commands.describe(user="The member whose avatar to fetch (optional)")
@@ -323,6 +367,9 @@ async def avatar(interaction: discord.Interaction, user: discord.Member = None):
     embed.set_image(url=user.avatar.url if user.avatar else user.default_avatar.url)
     embed.set_footer(text=f"Requested by {interaction.user.display_name}")
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Avatar command used
+    log_embed = discord.Embed(description=f"Avatar command used by {interaction.user.mention} on {user.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="roll", description="Roll a dice (e.g., d20, 2d6)")
 @app_commands.describe(roll_string="The dice to roll (e.g., 1d6, 3d20)")
@@ -344,6 +391,9 @@ async def roll(interaction: discord.Interaction, roll_string: str):
         embed.add_field(name="Individual Rolls", value=", ".join(map(str, results)), inline=False)
         
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Roll command used
+    log_embed = discord.Embed(description=f"Roll command used by {interaction.user.mention}. Roll: `{roll_string}`, Result: **{total}**.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="say", description="Makes the bot repeat a message")
 @app_commands.describe(message="The message for the bot to repeat")
@@ -351,6 +401,10 @@ async def roll(interaction: discord.Interaction, roll_string: str):
 async def say(interaction: discord.Interaction, message: str):
     await interaction.response.send_message("✅ Message sent!", ephemeral=True)
     await interaction.channel.send(message)
+    # 🌟 LOG: Say command used (High detail)
+    log_embed = discord.Embed(title="🗣️ Bot Sent Message", description=f"**Author:** {interaction.user.mention}\n**Channel:** {interaction.channel.mention}\n**Content:** {message}", color=discord.Color.dark_teal())
+    await send_log_embed(interaction.guild, log_embed)
+
 
 @bot.tree.command(name="vote", description="Start a simple Yes/No poll")
 @app_commands.describe(question="The question for the poll")
@@ -361,16 +415,25 @@ async def vote(interaction: discord.Interaction, question: str):
     await message.add_reaction("👍")
     await message.add_reaction("👎")
     await message.add_reaction("🤷")
+    # 🌟 LOG: Vote command used
+    log_embed = discord.Embed(description=f"Vote command started by {interaction.user.mention} in {interaction.channel.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="nickname", description="Change a user's nickname")
 @app_commands.describe(user="The user whose nickname to change", nickname="The new nickname (blank to reset)")
 @app_commands.checks.has_permissions(manage_nicknames=True)
 async def nickname(interaction: discord.Interaction, user: discord.Member, nickname: str = None):
     if not interaction.guild: return
+    old_nick = user.nick or user.name
     try:
         await user.edit(nick=nickname, reason=f"Nickname changed by {interaction.user.display_name}")
         msg = f"✅ Changed {user.name}'s nickname to **{nickname}**." if nickname else f"✅ Reset {user.name}'s nickname."
         await interaction.response.send_message(msg, ephemeral=True)
+        
+        # 🌟 LOG: Nickname changed (High detail)
+        new_nick = nickname if nickname else user.name
+        log_embed = discord.Embed(title="✏️ Nickname Changed", description=f"**User:** {user.mention} (ID: `{user.id}`)\n**Moderator:** {interaction.user.mention}\n**Old Nick:** `{old_nick}`\n**New Nick:** `{new_nick}`", color=discord.Color.dark_blue())
+        await send_log_embed(interaction.guild, log_embed)
     except discord.Forbidden:
         await interaction.response.send_message("❌ I cannot change that user's nickname (permissions or hierarchy).", ephemeral=True)
 
@@ -388,6 +451,9 @@ async def roleinfo(interaction: discord.Interaction, role: discord.Role):
     embed.add_field(name="Created At", value=discord.utils.format_dt(role.created_at, style='R'), inline=True)
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
+    # 🌟 LOG: Roleinfo command used
+    log_embed = discord.Embed(description=f"Roleinfo command used by {interaction.user.mention} on role {role.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="uptime", description="Shows how long the bot has been running")
 async def uptime(interaction: discord.Interaction):
@@ -399,6 +465,9 @@ async def uptime(interaction: discord.Interaction):
     
     embed = discord.Embed(title="⏰ Bot Uptime", description=f"The bot has been running for: **{time_str}**", color=discord.Color.green())
     await interaction.response.send_message(embed=embed, ephemeral=True)
+    # 🌟 LOG: Uptime command used
+    log_embed = discord.Embed(description=f"Uptime command used by {interaction.user.mention}. Uptime: **{time_str}**.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 
 # ----------------------------------------------------
@@ -407,7 +476,6 @@ async def uptime(interaction: discord.Interaction):
 
 @bot.tree.command(name="wipe", description="Shows the next expected server wipe time")
 async def wipe(interaction: discord.Interaction):
-    # This date needs to be updated with your actual next wipe date
     next_wipe = datetime(2025, 12, 5, 0, 0) 
     time_remaining = next_wipe - datetime.now()
     
@@ -424,6 +492,9 @@ async def wipe(interaction: discord.Interaction):
     
     embed = discord.Embed(title="🗓️ RDU Server Wipe", description=response, color=color)
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Wipe command used
+    log_embed = discord.Embed(description=f"Wipe command used by {interaction.user.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="status", description="Shows the RDU server status and player count")
 async def status(interaction: discord.Interaction):
@@ -438,6 +509,9 @@ async def status(interaction: discord.Interaction):
     embed.set_footer(text="Data is a placeholder; real bots use API calls.")
     
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Status command used
+    log_embed = discord.Embed(description=f"Status command used by {interaction.user.mention}. Players: {player_count}/{max_players}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="crafttime", description="Lookup the crafting time for a RUST item")
 @app_commands.describe(item="The RUST item name (e.g., AK, C4, Large Furnace)")
@@ -449,10 +523,17 @@ async def crafttime(interaction: discord.Interaction, item: str):
     
     if item in craft_data:
         embed = discord.Embed(title=f"⏱️ Crafting Time: {item.upper()}", description=f"The time required to craft **{item.upper()}** is **{craft_data[item]}** seconds.", color=discord.Color.teal())
+        # 🌟 LOG: Crafttime command used
+        log_embed = discord.Embed(description=f"Crafttime lookup used by {interaction.user.mention} for item: **{item}**.", color=discord.Color.light_grey())
+        await send_log_embed(interaction.guild, log_embed)
     else:
         embed = discord.Embed(title="Item Not Found", description="That item is not in the database. Try an exact name (e.g., `AK`).", color=discord.Color.red())
+        # 🌟 LOG: Crafttime command failed
+        log_embed = discord.Embed(description=f"Crafttime lookup by {interaction.user.mention} failed for item: **{item}** (Not Found).", color=discord.Color.yellow())
+        await send_log_embed(interaction.guild, log_embed)
         
     await interaction.response.send_message(embed=embed)
+
 
 @bot.tree.command(name="recipe", description="Lookup the ingredients for a RUST item")
 @app_commands.describe(item="The RUST item name (e.g., AK, C4)")
@@ -466,8 +547,14 @@ async def recipe(interaction: discord.Interaction, item: str):
     
     if item in recipe_data:
         embed = discord.Embed(title=f"📜 Recipe: {item.upper()}", description=recipe_data[item], color=discord.Color.teal())
+        # 🌟 LOG: Recipe command used
+        log_embed = discord.Embed(description=f"Recipe lookup used by {interaction.user.mention} for item: **{item}**.", color=discord.Color.light_grey())
+        await send_log_embed(interaction.guild, log_embed)
     else:
         embed = discord.Embed(title="Item Not Found", description="That item is not in the database. Try an exact name.", color=discord.Color.red())
+        # 🌟 LOG: Recipe command failed
+        log_embed = discord.Embed(description=f"Recipe lookup by {interaction.user.mention} failed for item: **{item}** (Not Found).", color=discord.Color.yellow())
+        await send_log_embed(interaction.guild, log_embed)
         
     await interaction.response.send_message(embed=embed)
 
@@ -476,6 +563,9 @@ async def map_link(interaction: discord.Interaction):
     link = "https://map.playrust.io/?AussieRDU_Server"
     embed = discord.Embed(title="🗺️ RDU Map Link", description=f"[Click here to view the current server map]({link})", color=discord.Color.orange())
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Map command used
+    log_embed = discord.Embed(description=f"Map command used by {interaction.user.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="rules", description="Display the server rules")
 async def rules(interaction: discord.Interaction):
@@ -488,21 +578,25 @@ async def rules(interaction: discord.Interaction):
     )
     embed = discord.Embed(title="📜 RDU Server Rules", description=rules_text, color=discord.Color.red())
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Rules command used
+    log_embed = discord.Embed(description=f"Rules command used by {interaction.user.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="trade", description="Announces a trade in the trade channel")
 async def trade(interaction: discord.Interaction):
-    # NOTE: You'll need to update 'trade-channel' to your actual trade channel name
     if interaction.channel.name != "trade-channel":
         await interaction.response.send_message("❌ This command should only be used in the #trade-channel.", ephemeral=True)
         return
     
     embed = discord.Embed(title="🤝 Trade Offer Alert!", description=f"{interaction.user.mention} is looking to trade! Post your offer details below.", color=discord.Color.yellow())
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Trade command used
+    log_embed = discord.Embed(description=f"Trade announcement made by {interaction.user.mention} in {interaction.channel.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="report", description="Report a player to the moderation team")
 @app_commands.describe(player_name="The name of the player to report", reason="Reason for the report")
 async def report(interaction: discord.Interaction, player_name: str, reason: str):
-    # NOTE: You'll need to update 'mod-reports' to your actual report channel name
     mod_channel = discord.utils.get(interaction.guild.channels, name="mod-reports")
     
     if mod_channel:
@@ -514,6 +608,10 @@ async def report(interaction: discord.Interaction, player_name: str, reason: str
         # NOTE: Replace <@&Your_Mod_Role_ID> with the actual ID of your moderator role
         await mod_channel.send(f"**<@&Your_Mod_Role_ID>**", embed=report_embed)
         await interaction.response.send_message("✅ Your report has been submitted to the moderation team. Thank you!", ephemeral=True)
+        
+        # 🌟 LOG: Player report submitted (High detail)
+        log_embed = discord.Embed(title="🚨 Player Reported", description=f"**Reported Player:** `{player_name}`\n**Reported By:** {interaction.user.mention}\n**Reason:** {reason}", color=discord.Color.dark_red())
+        await send_log_embed(interaction.guild, log_embed)
     else:
         await interaction.response.send_message("❌ Could not find a mod-reports channel. Report failed.", ephemeral=True)
 
@@ -526,9 +624,11 @@ async def rustlore(interaction: discord.Interaction):
         "The hot air balloon was originally designed for observation, not travel.",
         "The Rust world is a simulation or experiment (fan theory)."
     ]
-    # FIX: Replaced discord.Color.dark_gold with standard gold()
     embed = discord.Embed(title="📖 RUST Lore Snippet", description=random.choice(lore), color=discord.Color.gold())
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Rustlore command used
+    log_embed = discord.Embed(description=f"Rustlore command used by {interaction.user.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="bestresource", description="Tells you the best spot to farm a resource")
 @app_commands.describe(resource="The resource to farm (e.g., Stone, Metal, Wood, Sulfur)")
@@ -545,9 +645,11 @@ async def bestresource(interaction: discord.Interaction, resource: app_commands.
         "wood": "Use a chainsaw in the heavy forest areas near the water.",
         "sulfur": "The snow biome is the best place to find high-yield sulfur nodes."
     }
-    # FIX: Replaced discord.Color.brown with a hex color (from_rgb) as it's not a standard name
     embed = discord.Embed(title=f"⛏️ Best {resource.name} Farm Spot", description=resource_info[resource.value], color=discord.Color.from_rgb(165, 42, 42)) 
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Bestresource command used
+    log_embed = discord.Embed(description=f"Bestresource command used by {interaction.user.mention} for **{resource.name}**.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="wipetype", description="Explains the types of RUST server wipes")
 async def wipetype(interaction: discord.Interaction):
@@ -555,32 +657,45 @@ async def wipetype(interaction: discord.Interaction):
     embed.add_field(name="Forced Wipe (Map + BP)", value="Occurs monthly (first Thursday). Wipes map and blueprints.", inline=False)
     embed.add_field(name="Map Wipe (No BP)", value="Can be weekly/bi-weekly. Wipes the map, keeps blueprints.", inline=False)
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Wipetype command used
+    log_embed = discord.Embed(description=f"Wipetype command used by {interaction.user.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="suggestion", description="Submit a suggestion for the server")
 @app_commands.describe(suggestion="Your suggestion for the server or community")
 async def rust_suggestion(interaction: discord.Interaction, suggestion: str):
     await interaction.response.send_message("✅ Your suggestion has been recorded. Thank you for your input!", ephemeral=True)
+    # 🌟 LOG: Suggestion submitted (High detail)
+    log_embed = discord.Embed(title="💡 New Suggestion", description=f"**By:** {interaction.user.mention}\n**Suggestion:** {suggestion}", color=discord.Color.yellow())
+    await send_log_embed(interaction.guild, log_embed)
     
 @bot.tree.command(name="teamlimit", description="Check the current server team/group limit")
 async def team_limit(interaction: discord.Interaction):
     limit = 4
     embed = discord.Embed(title="👥 Team/Group Limit", description=f"The maximum team/group limit on this server is **{limit}** players.", color=discord.Color.blue())
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Teamlimit command used
+    log_embed = discord.Embed(description=f"Teamlimit command used by {interaction.user.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="monument", description="Get a random RUST monument for a starting point")
 async def random_monument(interaction: discord.Interaction):
     monuments = ["Launch Site", "Oil Rig", "Water Treatment Plant", "Train Yard", "Bandit Camp", "Outpost"]
     choice = random.choice(monuments)
-    # FIX: Replaced discord.Color.gray with standard light_grey()
     embed = discord.Embed(title="🧭 Random Monument", description=f"Your starting monument suggestion is: **{choice}**", color=discord.Color.light_grey()) 
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Monument command used
+    log_embed = discord.Embed(description=f"Monument command used by {interaction.user.mention}. Choice: **{choice}**.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="time", description="Shows the current server time (real-world time)")
 async def server_time(interaction: discord.Interaction):
     current_time = datetime.now().strftime("%I:%M:%S %p %Z")
-    # Standardized to use dark_purple()
     embed = discord.Embed(title="⏳ Current Server Time", description=f"The current real-world server time is **{current_time} AEDT**.", color=discord.Color.dark_purple()) 
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Time command used
+    log_embed = discord.Embed(description=f"Time command used by {interaction.user.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="baseadvice", description="Get a quick tip for base building")
 async def baseadvice(interaction: discord.Interaction):
@@ -591,9 +706,11 @@ async def baseadvice(interaction: discord.Interaction):
         "Never leave a clear sightline from outside to your tool cupboard.",
         "Spread loot across multiple compartments/rooms."
     ]
-    # FIX: Replaced discord.Color.gray with standard light_grey()
     embed = discord.Embed(title="🧱 Base Building Advice", description=random.choice(advice), color=discord.Color.light_grey()) 
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Baseadvice command used
+    log_embed = discord.Embed(description=f"Baseadvice command used by {interaction.user.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="weapontier", description="Shows the general tier list of RUST weapons")
 async def weapon_tier(interaction: discord.Interaction):
@@ -605,6 +722,9 @@ async def weapon_tier(interaction: discord.Interaction):
     )
     embed = discord.Embed(title="🔫 RUST Weapon Tier List (General)", description=tier_list, color=discord.Color.red())
     await interaction.response.send_message(embed=embed)
+    # 🌟 LOG: Weapontier command used
+    log_embed = discord.Embed(description=f"Weapontier command used by {interaction.user.mention}.", color=discord.Color.light_grey())
+    await send_log_embed(interaction.guild, log_embed)
 
 @bot.tree.command(name="adminnotice", description="Post an official notice to the channel")
 @app_commands.describe(message="The official announcement message")
@@ -617,7 +737,10 @@ async def adminnotice(interaction: discord.Interaction, message: str):
     )
     embed.set_footer(text=f"Posted by {interaction.user.display_name}")
     await interaction.response.send_message("✅ Notice posted.", ephemeral=True)
-    await interaction.channel.send("@everyone", embed=embed)
+    sent_message = await interaction.channel.send("@everyone", embed=embed)
+    # 🌟 LOG: Admin notice sent (High detail)
+    log_embed = discord.Embed(title="📢 Admin Notice Sent", description=f"**Author:** {interaction.user.mention}\n**Channel:** {interaction.channel.mention}\n**Message ID:** `{sent_message.id}`", color=discord.Color.red())
+    await send_log_embed(interaction.guild, log_embed)
 
 # ----------------------------------------------------
 # 🛑 ERROR HANDLER & RUN BLOCK
@@ -625,35 +748,39 @@ async def adminnotice(interaction: discord.Interaction, message: str):
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    log_title = "🚨 UNHANDLED COMMAND ERROR"
+    log_color = discord.Color.dark_red()
+    
     if isinstance(error, app_commands.MissingPermissions):
-        embed = discord.Embed(
-            title="❌ Permission Denied",
-            description="You do not have the required permissions to run this command.",
-            color=discord.Color.red()
-        )
-        if interaction.response.is_done():
-             await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-             await interaction.response.send_message(embed=embed, ephemeral=True)
+        response_description = "You do not have the required permissions to run this command."
+        log_description = f"**Moderator:** {interaction.user.mention} (ID: `{interaction.user.id}`)\n**Command:** `/{interaction.command.name}`\n**Error:** Missing Permissions."
+        response_color = discord.Color.red()
     else:
         # Catch and log all other errors
         logger.error(f"Unhandled command error in {interaction.command.name}: {error.__class__.__name__}: {error}")
+        response_description = f"An unexpected error occurred while running `/{interaction.command.name}`. The developer has been notified."
+        log_description = f"**User:** {interaction.user.mention} (ID: `{interaction.user.id}`)\n**Command:** `/{interaction.command.name}`\n**Error Type:** {error.__class__.__name__}\n**Detail:** `{error}`"
+        response_color = discord.Color.red()
         
-        # Send a generic error message back to the user
-        try:
-            embed = discord.Embed(
-                title="⚠️ Command Error",
-                description=f"An unexpected error occurred while running `/{interaction.command.name}`. The developer has been notified.",
-                color=discord.Color.red()
-            )
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-        except Exception:
-            # Fallback if sending the embed fails
-            pass
-        
+    # Send a user-friendly error message back to the user
+    response_embed = discord.Embed(
+        title="❌ Command Denied",
+        description=response_description,
+        color=response_color
+    )
+    try:
+        if interaction.response.is_done():
+             await interaction.followup.send(embed=response_embed, ephemeral=True)
+        else:
+             await interaction.response.send_message(embed=response_embed, ephemeral=True)
+    except Exception:
+        pass # Ignore failure to send error message
+
+    # 🌟 LOG: Send the detailed error log to the channel
+    log_embed = discord.Embed(title=log_title, description=log_description, color=log_color)
+    await send_log_embed(interaction.guild, log_embed)
+
+
 try:
     bot.run(DISCORD_TOKEN)
 except Exception:
