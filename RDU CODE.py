@@ -1,11 +1,32 @@
+# --- COLAB/ENVIRONMENT SETUP BLOCK ---
+# This block runs a shell command to ensure Pycord and its voice dependencies are
+# installed and up-to-date before the import statements execute.
 import os
+import subprocess
+import sys
+
+# Check if the required library is installed, if not, install it.
+try:
+    import discord
+except ImportError:
+    # Use subprocess to run the pip command
+    print("Pycord/discord.py not found or incomplete. Installing/Upgrading with voice dependencies...")
+    try:
+        # We use 'py-cord[voice]' to ensure the necessary dependencies for 'sinks' (like PyNaCl) are installed.
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "py-cord[voice]"])
+        print("Installation complete. Restarting imports...")
+    except Exception as e:
+        print(f"FATAL: Failed to install py-cord[voice]. Please check your environment or network connection. Error: {e}")
+        sys.exit(1)
+# --- END SETUP BLOCK ---
+
+
 import discord
 from discord.ext import commands
 from discord import app_commands, utils, VoiceClient
-# --- CORRECTED IMPORT ---
-# Using the recommended method to access the sinks module from the Pycord fork
-import discord.sinks as sinks 
-# ------------------------
+# --- CORRECTED IMPORT (Pycord/Voice Fork) ---
+import discord.sinks as sinks
+# ---------------------------------------------
 
 import logging
 from datetime import datetime, timedelta
@@ -20,7 +41,9 @@ from typing import Optional
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN') or os.getenv('TOKEN')
 if not DISCORD_TOKEN:
     print("FATAL ERROR: Discord bot token not found in environment variables.")
-    exit()
+    # Exiting here is safer in Colab if the token is missing.
+    # In a local environment, you might ask for user input.
+    sys.exit(1)
 
 BOT_NAME = "RUST DOWN UNDER"
 DESCRIPTION = "A Discord bot for the RUST DOWN UNDER community"
