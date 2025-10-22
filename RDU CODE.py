@@ -1,27 +1,12 @@
 import os
-import subprocess
 import sys
 import logging
 from datetime import datetime, timedelta
 import asyncio
 import random
-import time
 from typing import Optional
 
-# --- CRITICAL ENVIRONMENT FIX FOR VOICE (COLAB/CONTAINERS) ---
-# This explicitly installs PyNaCl to solve the "PyNaCl library needed" error 
-# often encountered when starting a bot in a fresh environment after installation.
-try:
-    print("Executing pre-check and install for PyNaCl to guarantee voice functionality...")
-    # Use -I to ignore installed and reinstall, ensuring it's fresh for the current run
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "PyNaCl"])
-    print("PyNaCl check complete.")
-except Exception as e:
-    # This is a warning, as the subsequent discord import might still load it
-    print(f"Warning: Failed explicit install of PyNaCl: {e}")
-# -------------------------------------------------------------
-
-# Imports should now work reliably
+# Imports will now succeed because the Colab launcher guaranteed the installation
 import discord
 from discord.ext import commands
 from discord import app_commands, utils, VoiceClient
@@ -30,7 +15,8 @@ import discord.sinks as sinks
 
 # --- CONFIGURATION ---
 
-# IMPORTANT: You must set your bot token in your environment variables.
+# IMPORTANT: The Colab launcher relies on this check. 
+# Ensure your token is set in the Colab 'Secrets' tab as DISCORD_BOT_TOKEN
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN') or os.getenv('TOKEN')
 if not DISCORD_TOKEN:
     print("FATAL ERROR: Discord bot token not found in environment variables.")
@@ -39,7 +25,7 @@ if not DISCORD_TOKEN:
 BOT_NAME = "RUST DOWN UNDER"
 DESCRIPTION = "A Discord bot for the RUST DOWN UNDER community"
 LOG_CHANNEL_NAME = "bot-logs" 
-ADMIN_ID = 123456789012345678 # Placeholder for your Admin User ID (used for /eval)
+ADMIN_ID = 123456789012345678 # Placeholder for your Admin User ID 
 
 # --- LOGGING SETUP ---
 
@@ -263,7 +249,6 @@ async def join_command(interaction: discord.Interaction):
         return
     except Exception as e:
         logger.error(f"Voice connect error: {e}")
-        # The PyNaCl error should be fixed by the script-level install, but keeping this catch
         await interaction.followup.send("❌ An error occurred while trying to connect to the voice channel. Check bot permissions.", ephemeral=True)
         return
 
