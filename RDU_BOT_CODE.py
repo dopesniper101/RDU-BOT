@@ -17,9 +17,7 @@ from discord import app_commands, utils, VoiceClient
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN') or os.getenv('TOKEN')
 if not DISCORD_TOKEN:
     # This block is here for local testing outside of Colab/environment setup
-    # If run in Colab, the launcher script handles this.
     print("FATAL ERROR: Discord bot token not found in environment variables.")
-    # sys.exit(1) # Commented out for smoother execution after Colab setup
 
 BOT_NAME = "RUST DOWN UNDER"
 DESCRIPTION = "A Discord bot for the RUST DOWN UNDER community"
@@ -33,8 +31,6 @@ logger = logging.getLogger(__name__)
 
 # --- UTILITY FUNCTIONS ---
 
-# This function is defined here, but should be imported or moved in a modular structure.
-# Keeping it outside the class for global access from cogs/classes.
 def parse_duration(duration_str: str) -> Optional[timedelta]:
     """Parses a duration string (e.g., '1h', '30m', '5d') into a timedelta object."""
     duration_str = duration_str.lower()
@@ -99,7 +95,6 @@ class RDU_BOT(commands.Bot):
 
     async def on_guild_join(self, guild: discord.Guild):
         logger.info(f"Joined Guild: {guild.name} (ID: {guild.id})")
-        # Simplified on_guild_join logic
         
     @commands.Cog.listener()
     async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -200,13 +195,13 @@ class CoreCommands(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ Failed to sync commands: `{e}`", ephemeral=True)
 
-    @app_commands.command(name="reload", description="Reloads a specific cog (admin-only).")
-    @app_commands.checks.is_owner()
+    @app_commands.command(name="reload", description="Reloads a specific cog (owner-only).")
+    @commands.is_owner() # <-- CORRECTED
     async def reload_command(self, interaction: discord.Interaction, cog_name: str):
         await interaction.response.send_message(f"Attempting to reload cog {cog_name}...", ephemeral=True)
 
     @app_commands.command(name="shutdown", description="Safely shuts down the bot (owner-only).")
-    @app_commands.checks.is_owner()
+    @commands.is_owner() # <-- CORRECTED
     async def shutdown_command(self, interaction: discord.Interaction):
         await interaction.response.send_message("Shutting down...", ephemeral=True)
         await self.bot.close()
@@ -612,7 +607,6 @@ if __name__ == '__main__':
         token = os.getenv('DISCORD_BOT_TOKEN') or os.getenv('TOKEN')
         if not token:
             logger.error("Token missing. Cannot run.")
-            # sys.exit(1) # Commented out for smoother execution after Colab setup
 
         bot = RDU_BOT()
         bot.run(token)
