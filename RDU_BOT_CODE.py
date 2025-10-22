@@ -5,34 +5,65 @@ from datetime import datetime, timedelta
 import asyncio
 import random
 from typing import Optional
+import discord
+from discord.ext import commands
+from discord import app_commands, utils, VoiceClient
+import requests
 
-# Imports will now succeed because the Colab launcher guaranteed the installation
+# --- CONFIGURATION ---
+TEMP_BOT_FILE = "RDU_BOT_EXECUTABLE.py"
+
+# --- LOGGING SETUP ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# --- TOKEN SETUP ---
+DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN') or os.getenv('TOKEN')
+
+if not DISCORD_TOKEN:
+    try:
+        from google.colab import userdata 
+        # Attempt to get the token from Colab Secrets
+        DISCORD_TOKEN = userdata.get('DISCORD_BOT_TOKEN')
+        if DISCORD_TOKEN:
+            os.environ['DISCORD_BOT_TOKEN'] = DISCORD_TOKEN
+            logger.info("✅ Successfully loaded Discord Token from Colab Secrets.")
+        else:
+            raise ValueError("Secret value is empty or access is restricted.")
+    except Exception:
+        logger.error("\nFATAL ERROR: Discord bot token not found in environment variables.")
+        logger.error("Please ensure your token is set in the Colab 'Secrets' panel as 'DISCORD_BOT_TOKEN'.")
+        sys.exit(1)
+
+# --- CORRECTED BOT CODE (Embedded to avoid GitHub CDN cache issues) ---
+
+# This code block includes ALL previous fixes (is_owner, /serverstatus, /langtranslate)
+BOT_CODE_CONTENT = """
+import os
+import sys
+import logging
+from datetime import datetime, timedelta
+import asyncio
+import random
+from typing import Optional
 import discord
 from discord.ext import commands
 from discord import app_commands, utils, VoiceClient
 
 # --- CONFIGURATION ---
-
-# IMPORTANT: The Colab launcher sets this.
-DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN') or os.getenv('TOKEN')
-if not DISCORD_TOKEN:
-    # This block is here for local testing outside of Colab/environment setup
-    print("FATAL ERROR: Discord bot token not found in environment variables.")
-
+# The Colab launcher sets the token.
 BOT_NAME = "RUST DOWN UNDER"
 DESCRIPTION = "A Discord bot for the RUST DOWN UNDER community"
 LOG_CHANNEL_NAME = "bot-logs" 
 ADMIN_ID = 123456789012345678 # <<< REPLACE WITH YOUR ADMIN USER ID >>>
 
 # --- LOGGING SETUP ---
-
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # --- UTILITY FUNCTIONS ---
 
 def parse_duration(duration_str: str) -> Optional[timedelta]:
-    """Parses a duration string (e.g., '1h', '30m', '5d') into a timedelta object."""
     duration_str = duration_str.lower()
     amount = 0
     unit = ''
@@ -51,7 +82,6 @@ def parse_duration(duration_str: str) -> Optional[timedelta]:
     return None
 
 async def send_log_embed(bot, guild: discord.Guild, embed: discord.Embed):
-    """Finds the bot-logs channel and sends the provided embed."""
     log_channel = discord.utils.get(guild.channels, name=bot.log_channel_name)
     if log_channel:
         try:
@@ -74,15 +104,11 @@ class RDU_BOT(commands.Bot):
         self.admin_id = ADMIN_ID
 
     async def setup_hook(self):
-        """Called immediately before bot goes online to load cogs/classes."""
-        
-        # Add the monolithic command classes
         await self.add_cog(CoreCommands(self))
         await self.add_cog(ModerationCommands(self))
         await self.add_cog(RustGameCommands(self))
         await self.add_cog(FunCommands(self))
 
-        # Sync commands on startup 
         try:
             synced = await self.tree.sync()
             logger.info(f"Successfully synced {len(synced)} slash commands on startup.")
@@ -98,7 +124,6 @@ class RDU_BOT(commands.Bot):
         
     @commands.Cog.listener()
     async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        # Global error handler (simplified)
         response_description = "An unexpected error occurred."
         if isinstance(error, app_commands.MissingPermissions):
             response_description = "You do not have the required permissions to run this command."
@@ -603,7 +628,6 @@ class FunCommands(commands.Cog):
 if __name__ == '__main__':
     try:
         logger.info("Starting bot...")
-        # The Colab startup script will set the DISCORD_TOKEN environment variable
         token = os.getenv('DISCORD_BOT_TOKEN') or os.getenv('TOKEN')
         if not token:
             logger.error("Token missing. Cannot run.")
@@ -614,3 +638,34 @@ if __name__ == '__main__':
         logger.error("Failed to log in. Check your DISCORD_BOT_TOKEN.")
     except Exception as e:
         logger.error(f"An unexpected error occurred during bot execution: {e}")
+"""
+
+# --- 1. INSTALL DEPENDENCIES ---
+print("--- 1. Installing/Fixing Dependencies ---")
+!pip uninstall -y discord discord.py py-cord > /dev/null 2>&1
+!pip install -U discord.py[voice]==2.3.2 PyNaCl
+print("✅ Installation complete.")
+
+# --- 2. SAVING EMBEDDED CODE ---
+print("\n--- 2. Saving Embedded Code ---")
+try:
+    with open(TEMP_BOT_FILE, 'w') as f:
+        f.write(BOT_CODE_CONTENT)
+        
+    print(f"✅ Corrected code saved to {TEMP_BOT_FILE}")
+    print(f"File size: {os.path.getsize(TEMP_BOT_FILE) / 1024:.2f} KB (Contains 100 commands)")
+
+except Exception as e:
+    logger.error(f"❌ FATAL ERROR during code save: {e.__class__.__name__}: {e}")
+    sys.exit(1)
+
+# --- 3. STARTING DISCORD BOT ---
+print("\n--- 3. Starting Discord Bot ---")
+try:
+    os.environ['DISCORD_BOT_TOKEN'] = DISCORD_TOKEN 
+    
+    # Execute the bot file
+    !python {TEMP_BOT_FILE}
+
+except Exception as e:
+    logger.error(f"❌ An unexpected error occurred during bot execution: {e.__class__.__name__}: {e}")
