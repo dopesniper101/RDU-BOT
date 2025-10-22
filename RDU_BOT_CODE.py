@@ -407,7 +407,7 @@ class RustGameCommands(commands.Cog):
     async def bpwipe_command(self, interaction: discord.Interaction):
         await interaction.response.send_message("📜 Next BP Wipe: 1st Thursday of the Month (Simulated)", ephemeral=False)
 
-    @app_commands.command(name="serverstatus", description="Displays the live player count and RUST server health.") # <--- RENAMED
+    @app_commands.command(name="serverstatus", description="Displays the live player count and RUST server health.")
     async def serverstatus_command(self, interaction: discord.Interaction):
         players = random.randint(50, 200)
         await interaction.response.send_message(f"🟢 Server Status: {players}/250 players online (Simulated)", ephemeral=False)
