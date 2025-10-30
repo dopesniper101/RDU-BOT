@@ -1,3 +1,5 @@
+# pip install discord
+
 import os
 import sys
 import logging
@@ -10,21 +12,21 @@ from typing import Optional
 import discord
 from discord.ext import commands
 from discord import app_commands, utils
-from discord.ext.commands import is_owner 
+from discord.ext.commands import is_owner
 
 # --- CONFIGURATION ---
 
 # IMPORTANT: The Colab launcher sets this.
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_TOKEN') or os.getenv('TOKEN')
 if not DISCORD_TOKEN:
-    print("FATAL ERROR: Discord bot token not found in environment variables.")
+    print("FATAL ERROR: Discord bot token not found in environment variables.")
 
 BOT_NAME = "RUST DOWN UNDER"
 DESCRIPTION = "A Discord bot for the RUST DOWN UNDER community"
 # Ensure you create a text channel with this exact name
-LOG_CHANNEL_NAME = "bot-logs" 
-# ⚠️ CRITICAL: REPLACE THIS WITH YOUR ACTUAL DISCORD USER ID 
-ADMIN_ID = 123456789012345678 
+LOG_CHANNEL_NAME = "bot-logs"
+# ⚠️ CRITICAL: REPLACE THIS WITH YOUR ACTUAL DISCORD USER ID
+ADMIN_ID = 123456789012345678
 
 # --- LOGGING SETUP ---
 
@@ -34,763 +36,819 @@ logger = logging.getLogger(__name__)
 # --- UTILITY FUNCTIONS ---
 
 def create_embed(title: str, description: str, color: discord.Color = discord.Color.blue()) -> discord.Embed:
-    """Creates a standardized embed response."""
-    embed = discord.Embed(
-        title=title,
-        description=description,
-        color=color
-    )
-    # The automatic deletion footer for public messages
-    embed.set_footer(text="Auto-deleting in 30 seconds.")
-    return embed
+    """Creates a standardized embed response."""
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=color
+    )
+    # The automatic deletion footer for public messages
+    embed.set_footer(text="Auto-deleting in 30 seconds.")
+    return embed
 
 async def delete_after_30s(message: discord.Message):
-    """Waits 30 seconds and then deletes the message."""
-    await asyncio.sleep(30)
-    try:
-        # Check if the message hasn't been deleted already
-        await message.delete()
-    except discord.errors.NotFound:
-        pass
-    except discord.HTTPException as e:
-        logger.warning(f"Failed to delete message: {e}")
+    """Waits 30 seconds and then deletes the message."""
+    await asyncio.sleep(30)
+    try:
+        # Check if the message hasn't been deleted already
+        await message.delete()
+    except discord.errors.NotFound:
+        pass
+    except discord.HTTPException as e:
+        logger.warning(f"Failed to delete message: {e}")
 
 
 # --- BOT CLASS DEFINITION ---
 
 class RDU_BOT(commands.Bot):
-    def __init__(self):
-        intents = discord.Intents.default()
-        intents.message_content = True
-        intents.members = True
-        intents.guilds = True
-        intents.voice_states = True 
-        
-        super().__init__(
-            command_prefix='!', 
-            intents=intents, 
-            description=DESCRIPTION, 
-            help_command=None, 
-            owner_id=ADMIN_ID # Used for is_owner() check
-        )
-        self.start_time = datetime.now()
-        self.log_channel_name = LOG_CHANNEL_NAME
-        self.admin_id = ADMIN_ID
-        self.log_channel = None # Initialize log channel object for global access
-        # Auto-detection settings: {guild_id: {'keyword': str, 'justification': str, 'response': str}}
-        self.detection_settings = {} 
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        intents.guilds = True
+        intents.voice_states = True
 
-    async def setup_hook(self):
-        """Called immediately before bot goes online to load cogs/classes."""
-        
-        # Add the monolithic command classes
-        await self.add_cog(CoreCommands(self))
-        await self.add_cog(ModerationCommands(self))
-        await self.add_cog(FunCommands(self))
-        await self.add_cog(AutoDetectCommands(self)) # ADDED NEW COG
-        # Sync commands on startup 
-        try:
-            synced = await self.tree.sync()
-            logger.info(f"Successfully synced {len(synced)} slash commands on startup.")
-        except Exception as e:
-            logger.error(f"Failed to sync commands on startup: {e}")
+        super().__init__(
+            command_prefix='!',
+            intents=intents,
+            description=DESCRIPTION,
+            help_command=None,
+            owner_id=ADMIN_ID # Used for is_owner() check
+        )
+        self.start_time = datetime.now()
+        self.log_channel_name = LOG_CHANNEL_NAME
+        self.admin_id = ADMIN_ID
+        self.log_channel = None # Initialize log channel object for global access
+        # Auto-detection settings: {guild_id: {'keyword': str, 'justification': str, 'response': str}}
+        self.detection_settings = {}
 
-        
-    async def on_ready(self):
-        logger.info(f'{self.user} has connected to Discord! Latency: {round(self.latency * 1000)}ms')
-        
-        # Find the log channel across all guilds
-        for guild in self.guilds:
-            # Look for a channel with the specific name
-            log_channel_candidate = discord.utils.get(guild.text_channels, name=self.log_channel_name)
-            if log_channel_candidate:
-                self.log_channel = log_channel_candidate
-                logger.info(f"Found log channel: #{self.log_channel.name} in {guild.name}")
-                break
-        
-        if not self.log_channel:
-            logger.warning(f"Could not find the text channel named '{self.log_channel_name}' in any connected guild.")
-        else:
-            # Send a startup confirmation message to the log channel
-            startup_embed = discord.Embed(
-                title="✅ Bot Online",
-                description=f"{self.user.name} is now operational. Latency: `{round(self.latency * 1000)}ms`.",
-                color=discord.Color.green()
-            )
-            try:
-                await self.log_channel.send(embed=startup_embed)
-            except discord.errors.Forbidden:
-                logger.error(f"Cannot send startup message to {self.log_channel.name}. Check bot permissions.")
+    async def setup_hook(self):
+        """Called immediately before bot goes online to load cogs/classes."""
 
-    async def _log_action(self, title: str, description: str, moderator: discord.Member, target: Optional[discord.User | discord.Member] = None, color: discord.Color = discord.Color.blue()):
-        """Central function to create and send embedded log messages to the bot-logs channel."""
-        if not self.log_channel:
-            logger.warning(f"Attempted to log action '{title}', but log channel is not configured.")
-            return
-
-        log_embed = discord.Embed(
-            title=title,
-            description=description,
-            color=color,
-            timestamp=datetime.now()
-        )
-        
-        # Add moderator/context details
-        log_embed.add_field(name="Moderator", value=moderator.mention, inline=True)
-        if target:
-            # Handle User objects (for unban) and Member objects (for kick/ban)
-            if isinstance(target, discord.Member):
-                log_embed.add_field(name="Target User", value=target.mention, inline=True)
-                log_embed.add_field(name="Target ID", value=f"`{target.id}`", inline=True)
-            elif isinstance(target, discord.Object) or isinstance(target, discord.User):
-                 # For unban where we only have ID
-                 log_embed.add_field(name="Target ID", value=f"`{target.id}`", inline=True)
-        
-        # Set footer for context and source
-        log_embed.set_footer(text=f"Server: {moderator.guild.name} | Mod ID: {moderator.id}")
-        
-        try:
-            await self.log_channel.send(embed=log_embed)
-        except discord.errors.Forbidden:
-            logger.error(f"Cannot send logs to {self.log_channel.name}. Check bot permissions in that channel.")
-        except Exception as e:
-            logger.error(f"Error sending log message: {e}")
-
-        
-    async def on_guild_join(self, guild: discord.Guild):
-        logger.info(f"Joined Guild: {guild.name} (ID: {guild.id})")
-        
-    @commands.Cog.listener()
-    async def on_app_command_completion(self, interaction: discord.Interaction, command: app_commands.Command | app_commands.ContextMenu):
-        """Attempts to delete the interaction response after 30 seconds, unless it was ephemeral or permanent."""
-        
-        # Skip auto-delete for commands intended to be permanent
-        if interaction.command and interaction.command.name in ['poll', 'rules', 'faq']: 
-             return
-
-        try:
-            message = await interaction.original_response()
-            
-            # If the response is ephemeral, skip
-            if message.flags.ephemeral:
-                return
-
-            self.loop.create_task(delete_after_30s(message))
-        except discord.errors.NotFound:
-            pass
-        except Exception as e:
-            logger.warning(f"Error scheduling message deletion: {e}")
+        # Add the monolithic command classes
+        await self.add_cog(CoreCommands(self))
+        await self.add_cog(ModerationCommands(self))
+        await self.add_cog(FunCommands(self))
+        await self.add_cog(AutoDetectCommands(self)) # ADDED NEW COG
+        # Sync commands on startup
+        try:
+            synced = await self.tree.sync()
+            logger.info(f"Successfully synced {len(synced)} slash commands on startup.")
+        except Exception as e:
+            logger.error(f"Failed to sync commands on startup: {e}")
 
 
-    @commands.Cog.listener()
-    async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        # Global error handler 
-        response_description = "An unexpected error occurred."
-        color = discord.Color.red()
-        ephemeral_status = True 
-        
-        if isinstance(error, app_commands.CommandInvokeError):
-            error = error.original
-        
-        if isinstance(error, app_commands.MissingPermissions):
-            response_description = f"You do not have the required permissions to run this command: **{', '.join(error.missing_permissions)}**."
-        elif isinstance(error, app_commands.CommandNotFound):
-            return 
-        elif isinstance(error, discord.errors.NotFound) and error.code == 10062:
-            response_description = "The command took too long to respond and timed out. Please try again."
-            ephemeral_status = True
-        elif isinstance(error, app_commands.BotMissingPermissions):
-            response_description = f"The bot is missing the following permissions: **{', '.join(error.missing_permissions)}**."
-        elif isinstance(error, discord.errors.Forbidden):
-            response_description = "I do not have the necessary permissions (role hierarchy or missing permissions) to perform that action on the target."
-        elif isinstance(error, commands.NotOwner):
-             response_description = "This command can only be run by the bot owner."
-        else:
-            logger.error(f"App Command Error: {error.__class__.__name__}: {error} in command {interaction.command.name if interaction.command else 'unknown'}")
+    async def on_ready(self):
+        logger.info(f'{self.user} has connected to Discord! Latency: {round(self.latency * 1000)}ms')
+
+        # Find the log channel across all guilds
+        for guild in self.guilds:
+            # Look for a channel with the specific name
+            log_channel_candidate = discord.utils.get(guild.text_channels, name=self.log_channel_name)
+            if log_channel_candidate:
+                self.log_channel = log_channel_candidate
+                logger.info(f"Found log channel: #{self.log_channel.name} in {guild.name}")
+                break
+
+        if not self.log_channel:
+            logger.warning(f"Could not find the text channel named '{self.log_channel_name}' in any connected guild.")
+        else:
+            # Send a startup confirmation message to the log channel
+            startup_embed = discord.Embed(
+                title="✅ Bot Online",
+                description=f"{self.user.name} is now operational. Latency: `{round(self.latency * 1000)}ms`.",
+                color=discord.Color.green()
+            )
+            try:
+                await self.log_channel.send(embed=startup_embed)
+            except discord.errors.Forbidden:
+                logger.error(f"Cannot send startup message to {self.log_channel.name}. Check bot permissions.")
+
+    async def _log_action(self, title: str, description: str, moderator: discord.Member, target: Optional[discord.User | discord.Member] = None, color: discord.Color = discord.Color.blue()):
+        """Central function to create and send embedded log messages to the bot-logs channel."""
+        if not self.log_channel:
+            logger.warning(f"Attempted to log action '{title}', but log channel is not configured.")
+            return
+
+        log_embed = discord.Embed(
+            title=title,
+            description=description,
+            color=color,
+            timestamp=datetime.now()
+        )
+
+        # Add moderator/context details
+        log_embed.add_field(name="Moderator", value=moderator.mention, inline=True)
+        if target:
+            # Handle User objects (for unban) and Member objects (for kick/ban)
+            if isinstance(target, discord.Member):
+                log_embed.add_field(name="Target User", value=target.mention, inline=True)
+                log_embed.add_field(name="Target ID", value=f"`{target.id}`", inline=True)
+            elif isinstance(target, discord.Object) or isinstance(target, discord.User):
+                # For unban where we only have ID
+                log_embed.add_field(name="Target ID", value=f"`{target.id}`", inline=True)
+
+        # Set footer for context and source
+        log_embed.set_footer(text=f"Server: {moderator.guild.name} | Mod ID: {moderator.id}")
+
+        try:
+            await self.log_channel.send(embed=log_embed)
+        except discord.errors.Forbidden:
+            logger.error(f"Cannot send logs to {self.log_channel.name}. Check bot permissions in that channel.")
+        except Exception as e:
+            logger.error(f"Error sending log message: {e}")
 
 
-        error_embed = create_embed("❌ Command Error", response_description, color)
-        error_embed.set_footer(text="Error message (will not auto-delete).") 
-        
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=error_embed, ephemeral=ephemeral_status)
-            else:
-                await interaction.response.send_message(embed=error_embed, ephemeral=ephemeral_status)
-        except Exception:
-            pass
+    async def on_guild_join(self, guild: discord.Guild):
+        logger.info(f"Joined Guild: {guild.name} (ID: {guild.id})")
 
-    @commands.Cog.listener() # ADDED on_message LISTENER
-    async def on_message(self, message):
-        # Ignore messages from the bot itself and DMs
-        if message.author == self.user or not message.guild:
-            return
-        
-        guild_id = message.guild.id
-        
-        # Check if a detection rule is set for this server
-        if guild_id in self.detection_settings:
-            settings = self.detection_settings[guild_id]
-            keyword = settings['keyword']
-            response_template = settings['response']
-            
-            # Check if the keyword is in the message content (case-insensitive)
-            if keyword in message.content.lower():
-                
-                # Customize the response (replace {server_id} with the actual ID)
-                final_response = response_template.replace('{server_id}', str(guild_id))
-                
-                # Send the customized response in the same channel as the message
-                await message.channel.send(final_response)
+    @commands.Cog.listener()
+    async def on_app_command_completion(self, interaction: discord.Interaction, command: app_commands.Command | app_commands.ContextMenu):
+        """Attempts to delete the interaction response after 30 seconds, unless it was ephemeral or permanent."""
 
-        # Important: Process commands after the on_message logic
-        await self.process_commands(message)
+        # Skip auto-delete for commands intended to be permanent
+        if interaction.command and interaction.command.name in ['poll', 'rules', 'faq']:
+            return
 
-        
+        try:
+            message = await interaction.original_response()
+
+            # If the response is ephemeral, skip
+            if message.flags.ephemeral:
+                return
+
+            self.loop.create_task(delete_after_30s(message))
+        except discord.errors.NotFound:
+            pass
+        except Exception as e:
+            logger.warning(f"Error scheduling message deletion: {e}")
+
+
+    @commands.Cog.listener()
+    async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        # Global error handler
+        response_description = "An unexpected error occurred."
+        color = discord.Color.red()
+        ephemeral_status = True
+
+        if isinstance(error, app_commands.CommandInvokeError):
+            error = error.original
+
+        if isinstance(error, app_commands.MissingPermissions):
+            response_description = f"You do not have the required permissions to run this command: **{', '.join(error.missing_permissions)}**."
+        elif isinstance(error, app_commands.CommandNotFound):
+            return
+        elif isinstance(error, discord.errors.NotFound) and error.code == 10062:
+            response_description = "The command took too long to respond and timed out. Please try again."
+            ephemeral_status = True
+        elif isinstance(error, app_commands.BotMissingPermissions):
+            response_description = f"The bot is missing the following permissions: **{', '.join(error.missing_permissions)}**."
+        elif isinstance(error, discord.errors.Forbidden):
+            response_description = "I do not have the necessary permissions (role hierarchy or missing permissions) to perform that action on the target."
+        elif isinstance(error, commands.NotOwner):
+            response_description = "This command can only be run by the bot owner."
+        else:
+            logger.error(f"App Command Error: {error.__class__.__name__}: {error} in command {interaction.command.name if interaction.command else 'unknown'}")
+
+
+        error_embed = create_embed("❌ Command Error", response_description, color)
+        error_embed.set_footer(text="Error message (will not auto-delete).")
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=error_embed, ephemeral=ephemeral_status)
+            else:
+                await interaction.response.send_message(embed=error_embed, ephemeral=ephemeral_status)
+        except Exception:
+            pass
+
+    @commands.Cog.listener() # ADDED on_message LISTENER
+    async def on_message(self, message):
+        # Ignore messages from the bot itself and DMs
+        if message.author == self.user or not message.guild:
+            return
+
+        guild_id = message.guild.id
+
+        # Check if a detection rule is set for this server
+        if guild_id in self.detection_settings:
+            settings = self.detection_settings[guild_id]
+            keyword = settings['keyword']
+            response_template = settings['response']
+
+            # Check if the keyword is in the message content (case-insensitive)
+            if keyword in message.content.lower():
+
+                # Customize the response (replace {server_id} with the actual ID)
+                final_response = response_template.replace('{server_id}', str(guild_id))
+
+                # Send the customized response in the same channel as the message
+                await message.channel.send(final_response)
+
+        # Important: Process commands after the on_message logic
+        await self.process_commands(message)
+
+
 # --- 1. CORE COMMANDS CLASS ---
 
 class CoreCommands(commands.Cog):
-    def __init__(self, bot: RDU_BOT):
-        self.bot = bot
+    def __init__(self, bot: RDU_BOT):
+        self.bot = bot
 
-    @app_commands.command(name="help", description="Displays a list of available commands.")
-    async def help_command(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        
-        help_embed = discord.Embed(
-            title=f"RUST DOWN UNDER BOT Commands",
-            description="Use `/` to browse the full list of slash commands.\n\n",
-            color=discord.Color.gold()
-        )
+    @app_commands.command(name="help", description="Displays a list of available commands.")
+    async def help_command(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
 
-        def get_command_list(cog: commands.Cog) -> str:
-            commands_list = sorted([f"```/{cmd.name}```" for cmd in cog.get_app_commands()])
-            # Also include traditional commands (for the new autodetect command)
-            if cog.qualified_name == "AutoDetectCommands":
-                commands_list.append("```!autodetect```")
-            if not commands_list:
-                return "No commands in this category."
-            return " ".join(commands_list)
+        help_embed = discord.Embed(
+            title=f"RUST DOWN UNDER BOT Commands",
+            description="Use `/` to browse the full list of slash commands.\n\n",
+            color=discord.Color.gold()
+        )
 
-        core_cog = self.bot.get_cog("CoreCommands")
-        mod_cog = self.bot.get_cog("ModerationCommands")
-        fun_cog = self.bot.get_cog("FunCommands")
-        autodetect_cog = self.bot.get_cog("AutoDetectCommands") # GET NEW COG
+        def get_command_list(cog: commands.Cog) -> str:
+            commands_list = sorted([f"```/{cmd.name}```" for cmd in cog.get_app_commands()])
+            # Also include traditional commands (for the new autodetect command)
+            if cog.qualified_name == "AutoDetectCommands":
+                commands_list.append("```!autodetect```")
+            if not commands_list:
+                return "No commands in this category."
+            return " ".join(commands_list)
 
-        help_embed.add_field(name="⚙️ Core Commands", value=get_command_list(core_cog), inline=False)
-        help_embed.add_field(name="🛡️ Moderation Commands", value=get_command_list(mod_cog), inline=False)
-        help_embed.add_field(name="🎉 Fun Commands", value=get_command_list(fun_cog), inline=False)
-        help_embed.add_field(name="🤖 Auto-Response Commands", value=get_command_list(autodetect_cog), inline=False) # ADD NEW COG FIELD
+        core_cog = self.bot.get_cog("CoreCommands")
+        mod_cog = self.bot.get_cog("ModerationCommands")
+        fun_cog = self.bot.get_cog("FunCommands")
+        autodetect_cog = self.bot.get_cog("AutoDetectCommands") # GET NEW COG
 
-        help_embed.set_footer(text="This private message will not auto-delete.")
-        await interaction.followup.send(embed=help_embed, ephemeral=True)
+        help_embed.add_field(name="⚙️ Core Commands", value=get_command_list(core_cog), inline=False)
+        help_embed.add_field(name="🛡️ Moderation Commands", value=get_command_list(mod_cog), inline=False)
+        help_embed.add_field(name="🎉 Fun Commands", value=get_command_list(fun_cog), inline=False)
+        help_embed.add_field(name="🤖 Auto-Response Commands", value=get_command_list(autodetect_cog), inline=False) # ADD NEW COG FIELD
+
+        help_embed.set_footer(text="This private message will not auto-delete.")
+        await interaction.followup.send(embed=help_embed, ephemeral=True)
 
 
-    @app_commands.command(name="ping", description="Checks the bot's current latency (lag) to Discord.")
-    async def ping_command(self, interaction: discord.Interaction):
-        latency = round(self.bot.latency * 1000)
-        embed = create_embed(
-            title="🏓 Pong!",
-            description=f"Latency: `{latency}ms`",
-            color=discord.Color.green()
-        )
-        await interaction.response.send_message(embed=embed)
+    @app_commands.command(name="ping", description="Checks the bot's current latency (lag) to Discord.")
+    async def ping_command(self, interaction: discord.Interaction):
+        latency = round(self.bot.latency * 1000)
+        embed = create_embed(
+            title="🏓 Pong!",
+            description=f"Latency: `{latency}ms`",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="uptime", description="Shows how long the bot has been running continuously.")
-    async def uptime_command(self, interaction: discord.Interaction):
-        delta = datetime.now() - self.bot.start_time
-        hours, remainder = divmod(int(delta.total_seconds()), 3600)
-        minutes, seconds = divmod(remainder, 60)
-        uptime_str = f"{hours}h {minutes}m {seconds}s"
-        
-        embed = create_embed(
-            title="⏰ Bot Uptime",
-            description=f"Running continuously for: `{uptime_str}`"
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="serverinfo", description="Displays detailed information about the current server.")
-    async def serverinfo_command(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        member_count = guild.member_count
-        created_at = guild.created_at.strftime("%b %d, %Y")
-        
-        embed = create_embed(
-            title=f"ℹ️ Server Info: {guild.name}",
-            description=f"**Owner:** {guild.owner.mention}\n**Members:** {member_count}\n**Created:** {created_at}\n**Server ID:** `{guild.id}`"
-        )
-        if guild.icon:
-            embed.set_thumbnail(url=guild.icon.url)
-            
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="userinfo", description="Shows detailed information about a specific user.")
-    async def userinfo_command(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
-        member = member or interaction.user
-        
-        embed = create_embed(
-            title=f"👤 User Info: {member.display_name}",
-            description=f"**ID:** `{member.id}`\n**Joined Server:** {member.joined_at.strftime('%b %d, %Y')}\n**Account Created:** {member.created_at.strftime('%b %d, %Y')}"
-        )
-        embed.set_thumbnail(url=member.display_avatar.url)
-        
-        await interaction.response.send_message(embed=embed)
+    @app_commands.command(name="uptime", description="Shows how long the bot has been running continuously.")
+    async def uptime_command(self, interaction: discord.Interaction):
+        delta = datetime.now() - self.bot.start_time
+        hours, remainder = divmod(int(delta.total_seconds()), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        uptime_str = f"{hours}h {minutes}m {seconds}s"
 
-    @app_commands.command(name="avatar", description="Displays a user's profile picture at full resolution.")
-    async def avatar_command(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
-        member = member or interaction.user
-        
-        embed = create_embed(
-            title=f"🖼️ Avatar for {member.display_name}",
-            description=f"[Click here for full resolution]({member.display_avatar.url})"
-        )
-        embed.set_image(url=member.display_avatar.url)
-        
-        await interaction.response.send_message(embed=embed)
+        embed = create_embed(
+            title="⏰ Bot Uptime",
+            description=f"Running continuously for: `{uptime_str}`"
+        )
+        await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="sync", description="[Admin/Manager Only] Globally syncs all slash commands.")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.checks.bot_has_permissions(manage_guild=True)
-    async def sync_command(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            synced = await self.bot.tree.sync()
-            
-            # Log the action
-            await self.bot._log_action(
-                title="🔄 Commands Synced",
-                description=f"Successfully synced `{len(synced)}` commands globally.",
-                moderator=interaction.user,
-                color=discord.Color.blue()
-            )
-            
-            embed = create_embed(
-                title="✅ Commands Synced",
-                description=f"Successfully synced `{len(synced)}` commands globally."
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except Exception as e:
-            embed = create_embed(
-                title="❌ Sync Failed",
-                description=f"Failed to sync commands: `{e}`",
-                color=discord.Color.red()
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+    @app_commands.command(name="serverinfo", description="Displays detailed information about the current server.")
+    async def serverinfo_command(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        member_count = guild.member_count
+        created_at = guild.created_at.strftime("%b %d, %Y")
 
-    @app_commands.command(name="shutdown", description="Safely shuts down the bot (owner-only).")
-    @is_owner()
-    async def shutdown_command(self, interaction: discord.Interaction):
-        
-        # Log the action
-        await self.bot._log_action(
-            title="🛑 Bot Shutting Down",
-            description="Initiating safe shutdown sequence.",
-            moderator=interaction.user,
-            color=discord.Color.dark_red()
-        )
-        
-        embed = create_embed(
-            title="🛑 Shutting Down",
-            description="Bot is initiating a safe shutdown. Goodbye!"
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-        await self.bot.close()
+        embed = create_embed(
+            title=f"ℹ️ Server Info: {guild.name}",
+            description=f"**Owner:** {guild.owner.mention}\n**Members:** {member_count}\n**Created:** {created_at}\n**Server ID:** `{guild.id}`"
+        )
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
 
-    @app_commands.command(name="poll", description="Creates a simple reaction-based poll.")
-    async def poll_command(self, interaction: discord.Interaction, question: str, options: str):
-        await interaction.response.defer(thinking=True) 
-        
-        options_list = [opt.strip() for opt in options.split(',')]
-        
-        # Poll validation logic (2 to 9 options)
-        if not (2 <= len(options_list) <= 9):
-            error_embed = create_embed("❌ Error", "A poll must have between 2 and 9 options (separated by commas).", color=discord.Color.red())
-            error_embed.set_footer(text="Error message (will not auto-delete).")
-            return await interaction.followup.send(embed=error_embed, ephemeral=True)
-            
-        # Define the A-J Unicode regional indicator emojis
-        reaction_emojis = [chr(0x1f1e6 + i) for i in range(len(options_list))] # A, B, C...
-        display_options = [f"**{reaction_emojis[i]}** - {opt}" for i, opt in enumerate(options_list)]
-        
-        embed = discord.Embed(
-            title="📊 New Poll",
-            description=f"**{question}**\n\n" + "\n".join(display_options),
-            color=discord.Color.purple()
-        )
-        # Set footer to inform users it is permanent
-        embed.set_footer(text=f"Poll created by {interaction.user.display_name}. React to vote!") 
-        
-        # Send the message
-        await interaction.followup.send(embed=embed)
-        
-        # Add reactions
-        message = await interaction.original_response() 
-        for emoji in reaction_emojis:
-            await message.add_reaction(emoji)
-            
-    @app_commands.command(name="rules", description="Displays the server rules.")
-    async def rules_command(self, interaction: discord.Interaction):
-        # This will be permanent due to the listener exclusion
-        embed = discord.Embed(
-            title="📜 Server Rules",
-            description="1. Be excellent to each other.\n2. No cheating or exploiting.\n3. Follow Discord ToS/Guidelines.\n4. Respect staff decisions.",
-            color=discord.Color.dark_red()
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="faq", description="Find answers to frequently asked questions.")
-    async def faq_command(self, interaction: discord.Interaction, topic: Optional[str] = "General"):
-        # This will be permanent due to the listener exclusion
-        embed = discord.Embed(
-            title=f"❓ FAQ: {topic.title()}",
-            description="This is the answer to your frequently asked question about this topic. (Content should be updated manually or fetched from a file/database in a real bot).",
-            color=discord.Color.teal()
-        )
-        await interaction.response.send_message(embed=embed)
-        
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="userinfo", description="Shows detailed information about a specific user.")
+    async def userinfo_command(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
+        member = member or interaction.user
+
+        embed = create_embed(
+            title=f"👤 User Info: {member.display_name}",
+            description=f"**ID:** `{member.id}`\n**Joined Server:** {member.joined_at.strftime('%b %d, %Y')}\n**Account Created:** {member.created_at.strftime('%b %d, %Y')}"
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="avatar", description="Displays a user's profile picture at full resolution.")
+    async def avatar_command(self, interaction: discord.Interaction, member: Optional[discord.Member] = None):
+        member = member or interaction.user
+
+        embed = create_embed(
+            title=f"🖼️ Avatar for {member.display_name}",
+            description=f"[Click here for full resolution]({member.display_avatar.url})"
+        )
+        embed.set_image(url=member.display_avatar.url)
+
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="sync", description="[Admin/Manager Only] Globally syncs all slash commands.")
+    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.checks.bot_has_permissions(manage_guild=True)
+    async def sync_command(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            synced = await self.bot.tree.sync()
+
+            # Log the action
+            await self.bot._log_action(
+                title="🔄 Commands Synced",
+                description=f"Successfully synced `{len(synced)}` commands globally.",
+                moderator=interaction.user,
+                color=discord.Color.blue()
+            )
+
+            embed = create_embed(
+                title="✅ Commands Synced",
+                description=f"Successfully synced `{len(synced)}` commands globally."
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except Exception as e:
+            embed = create_embed(
+                title="❌ Sync Failed",
+                description=f"Failed to sync commands: `{e}`",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="shutdown", description="Safely shuts down the bot (owner-only).")
+    @is_owner()
+    async def shutdown_command(self, interaction: discord.Interaction):
+
+        # Log the action
+        await self.bot._log_action(
+            title="🛑 Bot Shutting Down",
+            description="Initiating safe shutdown sequence.",
+            moderator=interaction.user,
+            color=discord.Color.dark_red()
+        )
+
+        embed = create_embed(
+            title="🛑 Shutting Down",
+            description="Bot is initiating a safe shutdown. Goodbye!"
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await self.bot.close()
+
+    @app_commands.command(name="poll", description="Creates a simple reaction-based poll.")
+    async def poll_command(self, interaction: discord.Interaction, question: str, options: str):
+        await interaction.response.defer(thinking=True)
+
+        options_list = [opt.strip() for opt in options.split(',')]
+
+        # Poll validation logic (2 to 9 options)
+        if not (2 <= len(options_list) <= 9):
+            error_embed = create_embed("❌ Error", "A poll must have between 2 and 9 options (separated by commas).", color=discord.Color.red())
+            error_embed.set_footer(text="Error message (will not auto-delete).")
+            return await interaction.followup.send(embed=error_embed, ephemeral=True)
+
+        # Define the A-J Unicode regional indicator emojis
+        reaction_emojis = [chr(0x1f1e6 + i) for i in range(len(options_list))] # A, B, C...
+        display_options = [f"**{reaction_emojis[i]}** - {opt}" for i, opt in enumerate(options_list)]
+
+        embed = discord.Embed(
+            title="📊 New Poll",
+            description=f"**{question}**\n\n" + "\n".join(display_options),
+            color=discord.Color.purple()
+        )
+        # Set footer to inform users it is permanent
+        embed.set_footer(text=f"Poll created by {interaction.user.display_name}. React to vote!")
+
+        # Send the message
+        await interaction.followup.send(embed=embed)
+
+        # Add reactions
+        message = await interaction.original_response()
+        for emoji in reaction_emojis:
+            await message.add_reaction(emoji)
+
+    @app_commands.command(name="rules", description="Displays the server rules.")
+    async def rules_command(self, interaction: discord.Interaction):
+        # This will be permanent due to the listener exclusion
+        embed = discord.Embed(
+            title="📜 Server Rules",
+            description="1. Be excellent to each other.\n2. No cheating or exploiting.\n3. Follow Discord ToS/Guidelines.\n4. Respect staff decisions.",
+            color=discord.Color.dark_red()
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="faq", description="Find answers to frequently asked questions.")
+    async def faq_command(self, interaction: discord.Interaction, topic: Optional[str] = "General"):
+        # This will be permanent due to the listener exclusion
+        embed = discord.Embed(
+            title=f"❓ FAQ: {topic.title()}",
+            description="This is the answer to your frequently asked question about this topic. (Content should be updated manually or fetched from a file/database in a real bot).",
+            color=discord.Color.teal()
+        )
+        await interaction.response.send_message(embed=embed)
+
 
 # --- 2. MODERATION COMMANDS CLASS ---
 
 class ModerationCommands(commands.Cog):
-    def __init__(self, bot: RDU_BOT):
-        self.bot = bot
+    def __init__(self, bot: RDU_BOT):
+        self.bot = bot
 
-    def _check_hierarchy(self, moderator: discord.Member, target: discord.Member, action: str) -> Optional[str]:
-        """Checks if the moderator and bot can perform the action on the target."""
-        if target == moderator:
-            return f"You cannot {action} yourself."
-        
-        if moderator.top_role <= target.top_role and moderator != target.guild.owner:
-            return f"You cannot {action} a member with an equal or higher role than you."
-        
-        if target.top_role >= target.guild.me.top_role:
-             return f"I cannot {action} this member; my role is not high enough."
-        
-        return None
+    def _check_hierarchy(self, moderator: discord.Member, target: discord.Member, action: str) -> Optional[str]:
+        """Checks if the moderator and bot can perform the action on the target."""
+        if target == moderator:
+            return f"You cannot {action} yourself."
 
-    @app_commands.command(name="kick", description="Kicks a member from the server.")
-    @app_commands.checks.has_permissions(kick_members=True)
-    @app_commands.checks.bot_has_permissions(kick_members=True)
-    async def kick_command(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
-        await interaction.response.defer(thinking=True)
-        
-        error_msg = self._check_hierarchy(interaction.user, member, "kick")
-        if error_msg:
-            embed = create_embed("❌ Error", error_msg, color=discord.Color.red())
-            embed.set_footer(text="Error message (will not auto-delete).")
-            return await interaction.followup.send(embed=embed, ephemeral=True)
-            
-        try:
-            await member.kick(reason=reason)
-            
-            # Log the action
-            await self.bot._log_action(
-                title="🔨 Member Kicked",
-                description=f"**Reason:** {reason}",
-                moderator=interaction.user,
-                target=member,
-                color=discord.Color.orange()
-            )
-            
-            embed = create_embed(
-                title="🔨 Member Kicked",
-                description=f"{member.mention} (`{member.id}`) was kicked by {interaction.user.mention}.",
-                color=discord.Color.orange()
-            )
-            embed.add_field(name="Reason", value=reason, inline=False)
-            await interaction.followup.send(embed=embed)
-            
-        except discord.errors.Forbidden:
-             embed = create_embed("❌ Error", "I do not have the necessary permissions to kick this user.", color=discord.Color.red())
-             embed.set_footer(text="Error message (will not auto-delete).")
-             await interaction.followup.send(embed=embed, ephemeral=True)
+        if moderator.top_role <= target.top_role and moderator != target.guild.owner:
+            return f"You cannot {action} a member with an equal or higher role than you."
 
-    @app_commands.command(name="ban", description="Permanently bans a member from the server.")
-    @app_commands.checks.has_permissions(ban_members=True)
-    @app_commands.checks.bot_has_permissions(ban_members=True)
-    async def ban_command(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
-        await interaction.response.defer(thinking=True)
+        if target.top_role >= target.guild.me.top_role:
+            return f"I cannot {action} this member; my role is not high enough."
 
-        error_msg = self._check_hierarchy(interaction.user, member, "ban")
-        if error_msg:
-            embed = create_embed("❌ Error", error_msg, color=discord.Color.red())
-            embed.set_footer(text="Error message (will not auto-delete).")
-            return await interaction.followup.send(embed=embed, ephemeral=True)
-            
-        try:
-            await member.ban(reason=reason)
-            
-            # Log the action
-            await self.bot._log_action(
-                title="🚫 Member Banned",
-                description=f"**Reason:** {reason}",
-                moderator=interaction.user,
-                target=member,
-                color=discord.Color.red()
-            )
-            
-            embed = create_embed(
-                title="🚫 Member Banned",
-                description=f"{member.mention} (`{member.id}`) was permanently banned by {interaction.user.mention}.",
-                color=discord.Color.red()
-            )
-            embed.add_field(name="Reason", value=reason, inline=False)
-            await interaction.followup.send(embed=embed)
-            
-        except discord.errors.Forbidden:
-             embed = create_embed("❌ Error", "I do not have the necessary permissions to ban this user.", color=discord.Color.red())
-             embed.set_footer(text="Error message (will not auto-delete).")
-             await interaction.followup.send(embed=embed, ephemeral=True)
+        return None
 
-    @app_commands.command(name="unban", description="Unbans a member using their user ID.")
-    @app_commands.checks.has_permissions(ban_members=True)
-    @app_commands.checks.bot_has_permissions(ban_members=True)
-    async def unban_command(self, interaction: discord.Interaction, user_id: str):
-        await interaction.response.defer(thinking=True)
-        try:
-            user = discord.Object(id=int(user_id))
-            await interaction.guild.unban(user)
-            
-            # Log the action
-            await self.bot._log_action(
-                title="🔓 User Unbanned",
-                description=f"User ID `{user_id}` has been unbanned.",
-                moderator=interaction.user,
-                target=user,
-                color=discord.Color.green()
-            )
+    @app_commands.command(name="kick", description="Kicks a member from the server.")
+    @app_commands.checks.has_permissions(kick_members=True)
+    @app_commands.checks.bot_has_permissions(kick_members=True)
+    async def kick_command(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
+        await interaction.response.defer(thinking=True)
 
-            embed = create_embed(
-                title="🔓 User Unbanned",
-                description=f"User with ID `{user_id}` was successfully unbanned.",
-                color=discord.Color.green()
-            )
-            await interaction.followup.send(embed=embed)
-        except ValueError:
-            embed = create_embed("❌ Error", "Invalid user ID provided. Must be a numeric ID.", color=discord.Color.red())
-            embed.set_footer(text="Error message (will not auto-delete).")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except discord.errors.NotFound:
-            embed = create_embed("❌ Error", f"User with ID `{user_id}` is not currently banned on this server.", color=discord.Color.red())
-            embed.set_footer(text="Error message (will not auto-delete).")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        except discord.errors.Forbidden:
-            embed = create_embed("❌ Error", "I do not have permission to unban users.", color=discord.Color.red())
-            embed.set_footer(text="Error message (will not auto-delete).")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+        error_msg = self._check_hierarchy(interaction.user, member, "kick")
+        if error_msg:
+            embed = create_embed("❌ Error", error_msg, color=discord.Color.red())
+            embed.set_footer(text="Error message (will not auto-delete).")
+            return await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="purge", description="Deletes a specified number of messages in the current channel.")
-    @app_commands.checks.has_permissions(manage_messages=True)
-    @app_commands.checks.bot_has_permissions(manage_messages=True)
-    async def purge_command(self, interaction: discord.Interaction, count: app_commands.Range[int, 1, 100]):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        
-        deleted = await interaction.channel.purge(limit=count)
-        
-        # Log the action
-        await self.bot._log_action(
-            title="🗑️ Messages Purged",
-            description=f"Deleted **{len(deleted)}** messages in {interaction.channel.mention}.",
-            moderator=interaction.user,
-            color=discord.Color.dark_red()
-        )
-        
-        embed = create_embed(
-            title="🗑️ Messages Purged",
-            description=f"Successfully deleted **{len(deleted)}** messages.",
-            color=discord.Color.dark_red()
-        )
-        # Note: This is an ephemeral response.
-        await interaction.followup.send(embed=embed, ephemeral=True)
-        
-    @app_commands.command(name="lock", description="Locks a channel, preventing non-mod members from speaking.")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    @app_commands.checks.bot_has_permissions(manage_channels=True)
-    async def lock_command(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
-        channel = channel or interaction.channel
-        
-        overwrite = channel.overwrites_for(interaction.guild.default_role)
-        if overwrite.send_messages is False:
-            embed = create_embed("⚠️ Already Locked", f"{channel.mention} is already locked.", color=discord.Color.orange())
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
+        try:
+            await member.kick(reason=reason)
 
-        overwrite.send_messages = False
-        await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
-        
-        # Log the action
-        await self.bot._log_action(
-            title="🔒 Channel Locked",
-            description=f"{channel.mention} has been locked.",
-            moderator=interaction.user,
-            color=discord.Color.red()
-        )
-        
-        embed = create_embed(
-            title="🔒 Channel Locked",
-            description=f"{channel.mention} has been locked. Only moderators can send messages.",
-            color=discord.Color.red()
-        )
-        await interaction.response.send_message(embed=embed)
+            # Log the action
+            await self.bot._log_action(
+                title="🔨 Member Kicked",
+                description=f"**Reason:** {reason}",
+                moderator=interaction.user,
+                target=member,
+                color=discord.Color.orange()
+            )
 
-    @app_commands.command(name="unlock", description="Unlocks a channel, allowing non-mod members to speak.")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    @app_commands.checks.bot_has_permissions(manage_channels=True)
-    async def unlock_command(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
-        channel = channel or interaction.channel
-        
-        overwrite = channel.overwrites_for(interaction.guild.default_role)
-        if overwrite.send_messages is None or overwrite.send_messages is True:
-            embed = create_embed("⚠️ Already Unlocked", f"{channel.mention} is not explicitly locked.", color=discord.Color.orange())
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
+            embed = create_embed(
+                title="🔨 Member Kicked",
+                description=f"{member.mention} (`{member.id}`) was kicked by {interaction.user.mention}.",
+                color=discord.Color.orange()
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            await interaction.followup.send(embed=embed)
 
-        overwrite.send_messages = None 
-        await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
-        
-        # Log the action
-        await self.bot._log_action(
-            title="🔓 Channel Unlocked",
-            description=f"{channel.mention} has been unlocked.",
-            moderator=interaction.user,
-            color=discord.Color.green()
-        )
-        
-        embed = create_embed(
-            title="🔓 Channel Unlocked",
-            description=f"{channel.mention} has been unlocked. Members can send messages again.",
-            color=discord.Color.green()
-        )
-        await interaction.response.send_message(embed=embed)
-        
-    @app_commands.command(name="slowmode", description="Sets the slowmode delay for a channel (in seconds).")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    @app_commands.checks.bot_has_permissions(manage_channels=True)
-    async def slowmode_command(self, interaction: discord.Interaction, delay: app_commands.Range[int, 0, 21600], channel: Optional[discord.TextChannel] = None):
-        channel = channel or interaction.channel
-        
-        await channel.edit(slowmode_delay=delay)
-        
-        if delay == 0:
-            description = f"Slowmode removed from {channel.mention}."
-        else:
-            description = f"Slowmode set to **{delay} seconds** in {channel.mention}."
-            
-        # Log the action
-        await self.bot._log_action(
-            title="🐌 Slowmode Updated",
-            description=f"{description}",
-            moderator=interaction.user,
-            color=discord.Color.blue()
-        )
-        
-        embed = create_embed(
-            title="🐌 Slowmode Updated",
-            description=description,
-            color=discord.Color.blue()
-        )
-        await interaction.response.send_message(embed=embed)
+        except discord.errors.Forbidden:
+            embed = create_embed("❌ Error", "I do not have the necessary permissions to kick this user.", color=discord.Color.red())
+            embed.set_footer(text="Error message (will not auto-delete).")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="ban", description="Permanently bans a member from the server.")
+    @app_commands.checks.has_permissions(ban_members=True)
+    @app_commands.checks.bot_has_permissions(ban_members=True)
+    async def ban_command(self, interaction: discord.Interaction, member: discord.Member, reason: str = "No reason provided."):
+        await interaction.response.defer(thinking=True)
+
+        error_msg = self._check_hierarchy(interaction.user, member, "ban")
+        if error_msg:
+            embed = create_embed("❌ Error", error_msg, color=discord.Color.red())
+            embed.set_footer(text="Error message (will not auto-delete).")
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        try:
+            await member.ban(reason=reason)
+
+            # Log the action
+            await self.bot._log_action(
+                title="🚫 Member Banned",
+                description=f"**Reason:** {reason}",
+                moderator=interaction.user,
+                target=member,
+                color=discord.Color.red()
+            )
+
+            embed = create_embed(
+                title="🚫 Member Banned",
+                description=f"{member.mention} (`{member.id}`) was permanently banned by {interaction.user.mention}.",
+                color=discord.Color.red()
+            )
+            embed.add_field(name="Reason", value=reason, inline=False)
+            await interaction.followup.send(embed=embed)
+
+        except discord.errors.Forbidden:
+            embed = create_embed("❌ Error", "I do not have the necessary permissions to ban this user.", color=discord.Color.red())
+            embed.set_footer(text="Error message (will not auto-delete).")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="unban", description="Unbans a member using their user ID.")
+    @app_commands.checks.has_permissions(ban_members=True)
+    @app_commands.checks.bot_has_permissions(ban_members=True)
+    async def unban_command(self, interaction: discord.Interaction, user_id: str):
+        await interaction.response.defer(thinking=True)
+        try:
+            user = discord.Object(id=int(user_id))
+            await interaction.guild.unban(user)
+
+            # Log the action
+            await self.bot._log_action(
+                title="🔓 User Unbanned",
+                description=f"User ID `{user_id}` has been unbanned.",
+                moderator=interaction.user,
+                target=user,
+                color=discord.Color.green()
+            )
+
+            embed = create_embed(
+                title="🔓 User Unbanned",
+                description=f"User with ID `{user_id}` was successfully unbanned.",
+                color=discord.Color.green()
+            )
+            await interaction.followup.send(embed=embed)
+        except ValueError:
+            embed = create_embed("❌ Error", "Invalid user ID provided. Must be a numeric ID.", color=discord.Color.red())
+            embed.set_footer(text="Error message (will not auto-delete).")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except discord.errors.NotFound:
+            embed = create_embed("❌ Error", f"User with ID `{user_id}` is not currently banned on this server.", color=discord.Color.red())
+            embed.set_footer(text="Error message (will not auto-delete).")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except discord.errors.Forbidden:
+            embed = create_embed("❌ Error", "I do not have permission to unban users.", color=discord.Color.red())
+            embed.set_footer(text="Error message (will not auto-delete).")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="purge", description="Deletes a specified number of messages in the current channel.")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    @app_commands.checks.bot_has_permissions(manage_messages=True)
+    async def purge_command(self, interaction: discord.Interaction, count: app_commands.Range[int, 1, 100]):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        deleted = await interaction.channel.purge(limit=count)
+
+        # Log the action
+        await self.bot._log_action(
+            title="🗑️ Messages Purged",
+            description=f"Deleted **{len(deleted)}** messages in {interaction.channel.mention}.",
+            moderator=interaction.user,
+            color=discord.Color.dark_red()
+        )
+
+        embed = create_embed(
+            title="🗑️ Messages Purged",
+            description=f"Successfully deleted **{len(deleted)}** messages.",
+            color=discord.Color.dark_red()
+        )
+        # Note: This is an ephemeral response.
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="lock", description="Locks a channel, preventing non-mod members from speaking.")
+    @app_commands.checks.has_permissions(manage_channels=True)
+    @app_commands.checks.bot_has_permissions(manage_channels=True)
+    async def lock_command(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+        channel = channel or interaction.channel
+
+        overwrite = channel.overwrites_for(interaction.guild.default_role)
+        if overwrite.send_messages is False:
+            embed = create_embed("⚠️ Already Locked", f"{channel.mention} is already locked.", color=discord.Color.orange())
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        overwrite.send_messages = False
+        await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
+
+        # Log the action
+        await self.bot._log_action(
+            title="🔒 Channel Locked",
+            description=f"{channel.mention} has been locked.",
+            moderator=interaction.user,
+            color=discord.Color.red()
+        )
+
+        embed = create_embed(
+            title="🔒 Channel Locked",
+            description=f"{channel.mention} has been locked. Only moderators can send messages.",
+            color=discord.Color.red()
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="unlock", description="Unlocks a channel, allowing non-mod members to speak.")
+    @app_commands.checks.has_permissions(manage_channels=True)
+    @app_commands.checks.bot_has_permissions(manage_channels=True)
+    async def unlock_command(self, interaction: discord.Interaction, channel: Optional[discord.TextChannel] = None):
+        channel = channel or interaction.channel
+
+        overwrite = channel.overwrites_for(interaction.guild.default_role)
+        if overwrite.send_messages is None or overwrite.send_messages is True:
+            embed = create_embed("⚠️ Already Unlocked", f"{channel.mention} is not explicitly locked.", color=discord.Color.orange())
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        overwrite.send_messages = None
+        await channel.set_permissions(interaction.guild.default_role, overwrite=overwrite)
+
+        # Log the action
+        await self.bot._log_action(
+            title="🔓 Channel Unlocked",
+            description=f"{channel.mention} has been unlocked.",
+            moderator=interaction.user,
+            color=discord.Color.green()
+        )
+
+        embed = create_embed(
+            title="🔓 Channel Unlocked",
+            description=f"{channel.mention} has been unlocked. Members can send messages again.",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="slowmode", description="Sets the slowmode delay for a channel (in seconds).")
+    @app_commands.checks.has_permissions(manage_channels=True)
+    @app_commands.checks.bot_has_permissions(manage_channels=True)
+    async def slowmode_command(self, interaction: discord.Interaction, delay: app_commands.Range[int, 0, 21600], channel: Optional[discord.TextChannel] = None):
+        channel = channel or interaction.channel
+
+        await channel.edit(slowmode_delay=delay)
+
+        if delay == 0:
+            description = f"Slowmode removed from {channel.mention}."
+        else:
+            description = f"Slowmode set to **{delay} seconds** in {channel.mention}."
+
+        # Log the action
+        await self.bot._log_action(
+            title="🐌 Slowmode Updated",
+            description=f"{description}",
+            moderator=interaction.user,
+            color=discord.Color.blue()
+        )
+
+        # Response to the user
+        embed = create_embed(
+            title="🐌 Slowmode Updated",
+            description=description,
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embed=embed)
+
 
 # --- 3. FUN COMMANDS CLASS ---
 
 class FunCommands(commands.Cog):
-    def __init__(self, bot: RDU_BOT):
-        self.bot = bot
+    def __init__(self, bot: RDU_BOT):
+        self.bot = bot
 
-    @app_commands.command(name="8ball", description="Ask the magic 8-Ball a question.")
-    async def eightball_command(self, interaction: discord.Interaction, question: str):
-        responses = [
-            "It is certain.", "It is decidedly so.", "Without a doubt.", "Yes - definitely.",
-            "You may rely on it.", "As I see it, yes.", "Most likely.", "Outlook good.",
-            "Yes.", "Signs point to yes.", "Reply hazy, try again.", "Ask again later.",
-            "Better not tell you now.", "Cannot predict now.", "Concentrate and ask again.",
-            "Don't count on it.", "My reply is no.", "My sources say no.", "Outlook not so good.", "Very doubtful."
-        ]
-        embed = create_embed(
-            title="🎱 Magic 8-Ball",
-            description=f"**Q:** {question}\n**A:** **{random.choice(responses)}**",
-            color=discord.Color.dark_grey()
-        )
-        await interaction.response.send_message(embed=embed)
+    @app_commands.command(name="dice", description="Rolls a virtual six-sided die.")
+    async def dice_command(self, interaction: discord.Interaction):
+        result = random.randint(1, 6)
+        embed = create_embed(
+            title="🎲 Dice Roll",
+            description=f"You rolled a **{result}**!",
+            color=discord.Color.magenta()
+        )
+        await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="dice", description="Rolls a virtual dice.")
-    async def dice_command(self, interaction: discord.Interaction, sides: app_commands.Range[int, 2, 100]):
-        roll = random.randint(1, sides)
-        embed = create_embed(
-            title="🎲 Dice Roll",
-            description=f"You rolled a **D{sides}** and got: **{roll}**",
-            color=discord.Color.orange()
-        )
-        await interaction.response.send_message(embed=embed) # END OF FUN COMMANDS
+    @app_commands.command(name="flip", description="Flips a coin (Heads or Tails).")
+    async def flip_command(self, interaction: discord.Interaction):
+        result = random.choice(["Heads", "Tails"])
+        embed = create_embed(
+            title="🪙 Coin Flip",
+            description=f"The coin landed on **{result}**!",
+            color=discord.Color.magenta()
+        )
+        await interaction.response.send_message(embed=embed)
 
-# --- 4. AUTODETECT COMMANDS CLASS (NEW) ---
+    @app_commands.command(name="8ball", description="Ask the magic 8-Ball a question.")
+    async def eightball_command(self, interaction: discord.Interaction, question: str):
+        responses = [
+            "It is certain.", "It is decidedly so.", "Without a doubt.", "Yes - definitely.",
+            "You may rely on it.", "As I see it, yes.", "Most likely.", "Outlook good.",
+            "Yes.", "Signs point to yes.", "Reply hazy, try again.", "Ask again later.",
+            "Better not tell you now.", "Cannot predict now.", "Concentrate and ask again.",
+            "Don't count on it.", "My reply is no.", "My sources say no.", "Outlook not so good.",
+            "Very doubtful."
+        ]
+        answer = random.choice(responses)
+
+        embed = create_embed(
+            title="🎱 Magic 8-Ball",
+            description=f"**Question:** {question}\n**Answer:** {answer}",
+            color=discord.Color.purple()
+        )
+        await interaction.response.send_message(embed=embed)
+
+
+# --- 4. AUTO-DETECT COMMANDS CLASS ---
 
 class AutoDetectCommands(commands.Cog):
-    def __init__(self, bot: RDU_BOT):
-        self.bot = bot
+    def __init__(self, bot: RDU_BOT):
+        self.bot = bot
 
-    @commands.command(name='autodetect')
-    @commands.has_permissions(administrator=True) # Restrict this command to server admins
-    async def autodetect_command(self, ctx, action: str = None, keyword: str = None, justification: str = None, *, response_message: str = None):
-        """
-        Manages the auto-detection feature.
-        Usage:
-        !autodetect set <keyword> <justification> <response message>
-        !autodetect clear
-        !autodetect status
-        """
-        
-        guild_id = ctx.guild.id
-        
-        if action == 'set' and keyword and justification and response_message:
-            # Store the new settings, now including justification, in the bot's central dictionary
-            self.bot.detection_settings[guild_id] = {'keyword': keyword.lower(), 'justification': justification, 'response': response_message}
-            
-            # Example to show how to get the server ID, as you mentioned
-            response_message_with_id = response_message.replace('{server_id}', str(guild_id))
-            
-            # Confirmation message for the admin
-            await ctx.send(
-                f"✅ **Auto-detection set!**\n"
-                f"**Keyword:** `{keyword.lower()}`\n"
-                f"**Justification:** `{justification}`\n"
-                f"**Response:** `{response_message_with_id}`"
-            )
-            
-        elif action == 'clear':
-            if guild_id in self.bot.detection_settings:
-                del self.bot.detection_settings[guild_id]
-                await ctx.send("🧹 **Auto-detection cleared.** The bot will no longer monitor for keywords.")
-            else:
-                await ctx.send("❌ No auto-detection is currently set for this server.")
-            
-        elif action == 'status':
-            if guild_id in self.bot.detection_settings:
-                settings = self.bot.detection_settings[guild_id]
-                await ctx.send(
-                    f"📝 **Current Auto-detection Status:**\n"
-                    f"**Keyword:** `{settings['keyword']}`\n"
-                    f"**Justification:** `{settings['justification']}`\n"
-                    f"**Response:** `{settings['response']}`"
-                )
-            else:
-                await ctx.send("❌ No auto-detection is currently set for this server.")
-            
-        else:
-            # Help message
-            await ctx.send(
-                "**Invalid Usage.** Please use one of the following formats:\n"
-                "`!autodetect set <keyword> <justification> <response message>`\n"
-                "`!autodetect clear`\n"
-                "`!autodetect status`"
-            )
-        
-# --- EXECUTION ---
+    @commands.group(name="autodetect", invoke_without_command=True)
+    @commands.has_permissions(manage_guild=True)
+    async def autodetect_group(self, ctx: commands.Context):
+        """Manages the auto-response feature for a server."""
+        await ctx.message.delete()
+        
+        guild_id = ctx.guild.id
+        current_settings = self.bot.detection_settings.get(guild_id)
+        
+        if current_settings:
+            description = (
+                f"**Current Auto-Response for this server:**\n"
+                f"**Keyword:** `{current_settings['keyword']}`\n"
+                f"**Response:** `{current_settings['response']}`\n"
+                f"**Justification:** `{current_settings['justification']}`\n\n"
+                "Use `!autodetect set` to change, or `!autodetect remove` to disable."
+            )
+            color = discord.Color.green()
+        else:
+            description = (
+                "**Auto-Response is currently disabled for this server.**\n\n"
+                "Use `!autodetect set <keyword> <response> <justification>` to enable it."
+            )
+            color = discord.Color.orange()
+            
+        embed = create_embed("🤖 Auto-Response Status", description, color)
+        # We use a task here because we don't have an interaction object, but want the auto-delete feature.
+        message = await ctx.send(embed=embed)
+        self.bot.loop.create_task(delete_after_30s(message))
+
+    @autodetect_group.command(name="set")
+    @commands.has_permissions(manage_guild=True)
+    async def autodetect_set(self, ctx: commands.Context, keyword: str, response: str, justification: str):
+        """Sets the auto-response for a server: !autodetect set <keyword> <response> <justification>"""
+        await ctx.message.delete()
+        
+        guild_id = ctx.guild.id
+        self.bot.detection_settings[guild_id] = {
+            'keyword': keyword.lower(),
+            'justification': justification,
+            'response': response
+        }
+        
+        description = (
+            f"**Auto-Response is now set!**\n\n"
+            f"**Trigger:** Any message containing: `{keyword.lower()}`\n"
+            f"**Action:** Respond with: `{response}`\n"
+            f"**Justification:** `{justification}`"
+        )
+        
+        # Log the action
+        await self.bot._log_action(
+            title="🤖 Auto-Response Set",
+            description=f"Keyword: `{keyword.lower()}` | Response: `{response}`",
+            moderator=ctx.author,
+            color=discord.Color.blue()
+        )
+        
+        embed = create_embed("✅ Auto-Response Updated", description, discord.Color.green())
+        message = await ctx.send(embed=embed)
+        self.bot.loop.create_task(delete_after_30s(message))
+
+    @autodetect_group.command(name="remove")
+    @commands.has_permissions(manage_guild=True)
+    async def autodetect_remove(self, ctx: commands.Context):
+        """Removes the auto-response feature for a server."""
+        await ctx.message.delete()
+        
+        guild_id = ctx.guild.id
+        
+        if guild_id in self.bot.detection_settings:
+            del self.bot.detection_settings[guild_id]
+            description = "**Auto-Response feature has been successfully disabled for this server.**"
+            color = discord.Color.red()
+            
+            # Log the action
+            await self.bot._log_action(
+                title="❌ Auto-Response Removed",
+                description="The auto-response feature was disabled.",
+                moderator=ctx.author,
+                color=discord.Color.red()
+            )
+        else:
+            description = "**Auto-Response was already disabled for this server.**"
+            color = discord.Color.orange()
+            
+        embed = create_embed("❌ Auto-Response Disabled", description, color)
+        message = await ctx.send(embed=embed)
+        self.bot.loop.create_task(delete_after_30s(message))
+
+
+# --- BOT EXECUTION ---
+# The logic to run the bot 24/7 is on the hosting platform,
+# which executes this final block continuously.
 
 if __name__ == "__main__":
-    if DISCORD_TOKEN:
-        try:
-            bot = RDU_BOT()
-            bot.run(DISCORD_TOKEN)
-        except discord.LoginFailure:
-            print("\n\nERROR: The provided bot token is invalid. Please check your token.")
-        except Exception as e:
-            print(f"\n\nAn unexpected error occurred during bot execution: {e}")
+    if DISCORD_TOKEN:
+        try:
+            bot = RDU_BOT()
+            # The line that runs the bot using the token. This is the main loop.
+            bot.run(DISCORD_TOKEN)
+        except discord.errors.LoginFailure:
+            logger.error("FATAL ERROR: Improper token has been passed. Check DISCORD_BOT_TOKEN.")
+        except Exception as e:
+            logger.error(f"--- BOT CRASHED DUE TO UNEXPECTED ERROR ---")
+            logger.error(f"Error Type: {e.__class__.__name__}")
+            logger.error(f"Error Message: {e}")
