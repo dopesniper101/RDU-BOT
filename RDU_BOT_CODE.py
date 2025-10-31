@@ -1,7 +1,6 @@
-# Installation commands
-!pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib discord
-
+# Installation commands (fixed for SyntaxError)
 import os
+os.system("pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib discord")
 import sys
 import logging
 from datetime import datetime
