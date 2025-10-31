@@ -44,20 +44,48 @@ def create_embed(title: str, description: str, color: discord.Color = discord.Co
         description=description,
         color=color
     )
-    # The automatic deletion footer for public messages
-    embed.set_footer(text="Auto-deleting in 30 seconds.")
+    # MODIFICATION: Removed the static auto-deletion footer.
     return embed
 
-async def delete_after_30s(message: discord.Message):
-    """Waits 30 seconds and then deletes the message."""
-    await asyncio.sleep(30)
+async def countdown_deleter(message: discord.Message, duration: int = 30):
+    """Updates the message footer with a live countdown before deleting it."""
     try:
-        # Check if the message hasn't been deleted already
+        # Get the original embed and ensure it exists
+        original_embed = message.embeds[0] if message.embeds else None
+        if not original_embed:
+             # Fall back to simple delete if no embed is present
+             await asyncio.sleep(duration)
+             await message.delete()
+             return
+
+        # Start the countdown
+        for remaining in range(duration, 0, -1):
+            
+            # Create a mutable copy of the embed
+            new_embed = original_embed.copy()
+            
+            # Set the new countdown footer text
+            new_footer_text = f"⏳ Auto-deleting in {remaining} seconds."
+
+            # Note: We don't copy the original footer text here to keep it simple,
+            # but if an embed needs a custom, permanent footer, it must be set 
+            # after calling create_embed and before sending the message (e.g., in the command logic).
+            new_embed.set_footer(text=new_footer_text, icon_url=new_embed.footer.icon_url)
+            
+            # Edit the message with the new embed
+            await message.edit(embed=new_embed)
+            await asyncio.sleep(1)
+
+        # Final cleanup: delete the message
         await message.delete()
+
     except discord.errors.NotFound:
+        # Message already deleted, safe to ignore
         pass
     except discord.HTTPException as e:
-        logger.warning(f"Failed to delete message: {e}")
+        logger.warning(f"Failed to perform countdown or delete message: {e}")
+    except Exception as e:
+         logger.error(f"Error in countdown_deleter: {e}")
 
 
 # --- BOT CLASS DEFINITION ---
@@ -234,9 +262,8 @@ class RDU_BOT(commands.Bot):
             if message.flags.ephemeral:
                 return
 
-            # FIX APPLIED: Reverted to self.loop.create_task because this method is inside RDU_BOT (the bot itself),
-            # which does not have a 'bot' attribute.
-            self.loop.create_task(delete_after_30s(message))
+            # MODIFICATION: Use the new countdown_deleter
+            self.loop.create_task(countdown_deleter(message, 30))
         except discord.errors.NotFound:
             pass
         except Exception as e:
@@ -271,7 +298,7 @@ class RDU_BOT(commands.Bot):
 
 
         error_embed = create_embed("❌ Command Error", response_description, color)
-        error_embed.set_footer(text="Error message (will not auto-delete).")
+        error_embed.set_footer(text="Error message (will not auto-delete).") # Custom, non-deleting footer
 
         try:
             if interaction.response.is_done():
@@ -316,8 +343,8 @@ class RDU_BOT(commands.Bot):
                 # Send the customized response in the same channel as the message
                 sent_message = await message.channel.send(embed=response_embed)
                 
-                # Auto-delete the response (assuming auto-delete is desired for auto-responses)
-                self.loop.create_task(delete_after_30s(sent_message))
+                # MODIFICATION: Use the new countdown_deleter
+                self.loop.create_task(countdown_deleter(sent_message, 30))
                 # END CHANGED
 
         # Important: Process commands after the on_message logic
@@ -689,7 +716,7 @@ class ModerationCommands(commands.Cog):
             description=f"Successfully deleted **{len(deleted)}** messages.",
             color=discord.Color.dark_red()
         )
-        # Note: This is an ephemeral response.
+        # Note: This is an ephemeral response, so it won't be deleted by the completion listener.
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="lock", description="Locks a channel, preventing non-mod members from speaking.")
