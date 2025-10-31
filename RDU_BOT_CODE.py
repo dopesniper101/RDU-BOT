@@ -705,150 +705,139 @@ class FunCommands(commands.Cog):
         embed = create_embed(
             title="🎲 Dice Roll",
             description=f"You rolled a **{result}**!",
-            color=discord.Color.magenta()
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="flip", description="Flips a coin (Heads or Tails).")
-    async def flip_command(self, interaction: discord.Interaction):
-        result = random.choice(["Heads", "Tails"])
-        embed = create_embed(
-            title="🪙 Coin Flip",
-            description=f"The coin landed on **{result}**!",
-            color=discord.Color.magenta()
+            color=discord.Color.dark_green()
         )
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="8ball", description="Ask the magic 8-Ball a question.")
     async def eightball_command(self, interaction: discord.Interaction, question: str):
         responses = [
-            "It is certain.", "It is decidedly so.", "Without a doubt.", "Yes - definitely.",
-            "You may rely on it.", "As I see it, yes.", "Most likely.", "Outlook good.",
-            "Yes.", "Signs point to yes.", "Reply hazy, try again.", "Ask again later.",
-            "Better not tell you now.", "Cannot predict now.", "Concentrate and ask again.",
-            "Don't count on it.", "My reply is no.", "My sources say no.", "Outlook not so good.",
+            "It is certain.",
+            "It is decidedly so.",
+            "Without a doubt.",
+            "Yes - definitely.",
+            "You may rely on it.",
+            "As I see it, yes.",
+            "Most likely.",
+            "Outlook good.",
+            "Yes.",
+            "Signs point to yes.",
+            "Reply hazy, try again.",
+            "Ask again later.",
+            "Better not tell you now.",
+            "Cannot predict now.",
+            "Concentrate and ask again.",
+            "Don't count on it.",
+            "My reply is no.",
+            "My sources say no.",
+            "Outlook not so good.",
             "Very doubtful."
         ]
-        answer = random.choice(responses)
+        response = random.choice(responses)
 
         embed = create_embed(
             title="🎱 Magic 8-Ball",
-            description=f"**Question:** {question}\n**Answer:** {answer}",
-            color=discord.Color.purple()
+            description=f"**Question:** {question}\n**Answer:** {response}",
+            color=discord.Color.dark_grey()
         )
         await interaction.response.send_message(embed=embed)
 
 
 # --- 4. AUTO-DETECT COMMANDS CLASS ---
+# This is a new Cog for setting up a basic keyword auto-response system.
 
 class AutoDetectCommands(commands.Cog):
     def __init__(self, bot: RDU_BOT):
         self.bot = bot
 
-    @commands.group(name="autodetect", invoke_without_command=True)
-    @commands.has_permissions(manage_guild=True)
-    async def autodetect_group(self, ctx: commands.Context):
-        """Manages the auto-response feature for a server."""
-        await ctx.message.delete()
-        
-        guild_id = ctx.guild.id
-        current_settings = self.bot.detection_settings.get(guild_id)
-        
-        if current_settings:
-            description = (
-                f"**Current Auto-Response for this server:**\n"
-                f"**Keyword:** `{current_settings['keyword']}`\n"
-                f"**Response:** `{current_settings['response']}`\n"
-                f"**Justification:** `{current_settings['justification']}`\n\n"
-                "Use `!autodetect set` to change, or `!autodetect remove` to disable."
-            )
-            color = discord.Color.green()
-        else:
-            description = (
-                "**Auto-Response is currently disabled for this server.**\n\n"
-                "Use `!autodetect set <keyword> <response> <justification>` to enable it."
-            )
-            color = discord.Color.orange()
-            
-        embed = create_embed("🤖 Auto-Response Status", description, color)
-        # We use a task here because we don't have an interaction object, but want the auto-delete feature.
-        message = await ctx.send(embed=embed)
-        self.bot.loop.create_task(delete_after_30s(message))
+    @commands.command(name='autodetect', hidden=True) # Traditional command for setup/info
+    @commands.is_owner()
+    async def autodetect_legacy(self, ctx: commands.Context):
+        """Hidden command to give instructions for the slash command to the owner."""
+        embed = discord.Embed(
+            title="🤖 Auto-Response Setup",
+            description="Please use the **`/autoreset`** or **`/autoset`** slash commands for configuration. This command is deprecated.",
+            color=discord.Color.blue()
+        )
+        await ctx.send(embed=embed, delete_after=30)
 
-    @autodetect_group.command(name="set")
-    @commands.has_permissions(manage_guild=True)
-    async def autodetect_set(self, ctx: commands.Context, keyword: str, response: str, justification: str):
-        """Sets the auto-response for a server: !autodetect set <keyword> <response> <justification>"""
-        await ctx.message.delete()
-        
-        guild_id = ctx.guild.id
+    @app_commands.command(name="autoset", description="[Admin Only] Sets a keyword auto-response for the server.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def autoset_command(self, interaction: discord.Interaction, keyword: str, response: str, justification: str):
+        # Enforce case-insensitivity on the stored keyword
+        normalized_keyword = keyword.lower().strip()
+        guild_id = interaction.guild.id
+
+        if not normalized_keyword or not response:
+            error_embed = create_embed("❌ Error", "Keyword and Response cannot be empty.", color=discord.Color.red())
+            error_embed.set_footer(text="Error message (will not auto-delete).")
+            return await interaction.response.send_message(embed=error_embed, ephemeral=True)
+
+        # Store the new settings
         self.bot.detection_settings[guild_id] = {
-            'keyword': keyword.lower(),
+            'keyword': normalized_keyword,
             'justification': justification,
             'response': response
         }
-        
-        description = (
-            f"**Auto-Response is now set!**\n\n"
-            f"**Trigger:** Any message containing: `{keyword.lower()}`\n"
-            f"**Action:** Respond with: `{response}`\n"
-            f"**Justification:** `{justification}`"
-        )
-        
+
         # Log the action
         await self.bot._log_action(
-            title="🤖 Auto-Response Set",
-            description=f"Keyword: `{keyword.lower()}` | Response: `{response}`",
-            moderator=ctx.author,
-            color=discord.Color.blue()
+            title="📝 Auto-Response SET",
+            description=f"Auto-response rule created/updated for server.",
+            moderator=interaction.user,
+            color=discord.Color.purple()
         )
-        
-        embed = create_embed("✅ Auto-Response Updated", description, discord.Color.green())
-        message = await ctx.send(embed=embed)
-        self.bot.loop.create_task(delete_after_30s(message))
 
-    @autodetect_group.command(name="remove")
-    @commands.has_permissions(manage_guild=True)
-    async def autodetect_remove(self, ctx: commands.Context):
-        """Removes the auto-response feature for a server."""
-        await ctx.message.delete()
-        
-        guild_id = ctx.guild.id
-        
+        embed = create_embed(
+            title="✅ Auto-Response Set",
+            description=f"**Keyword:** `{keyword}`\n**Response:** `{response}`\n**Justification:** {justification}",
+            color=discord.Color.purple()
+        )
+        embed.set_footer(text="Response will trigger when the keyword is mentioned (case-insensitive).")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="autoreset", description="[Admin Only] Removes the keyword auto-response for the server.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def autoreset_command(self, interaction: discord.Interaction):
+        guild_id = interaction.guild.id
+
         if guild_id in self.bot.detection_settings:
             del self.bot.detection_settings[guild_id]
-            description = "**Auto-Response feature has been successfully disabled for this server.**"
-            color = discord.Color.red()
-            
+
             # Log the action
             await self.bot._log_action(
-                title="❌ Auto-Response Removed",
-                description="The auto-response feature was disabled.",
-                moderator=ctx.author,
-                color=discord.Color.red()
+                title="🗑️ Auto-Response RESET",
+                description="Auto-response rule removed for server.",
+                moderator=interaction.user,
+                color=discord.Color.dark_red()
             )
+
+            embed = create_embed(
+                title="✅ Auto-Response Reset",
+                description="The keyword auto-response has been successfully removed for this server.",
+                color=discord.Color.dark_red()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
-            description = "**Auto-Response was already disabled for this server.**"
-            color = discord.Color.orange()
-            
-        embed = create_embed("❌ Auto-Response Disabled", description, color)
-        message = await ctx.send(embed=embed)
-        self.bot.loop.create_task(delete_after_30s(message))
+            embed = create_embed(
+                title="⚠️ No Auto-Response Set",
+                description="There is no active keyword auto-response to reset for this server.",
+                color=discord.Color.orange()
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-# --- BOT EXECUTION ---
-# The logic to run the bot 24/7 is on the hosting platform,
-# which executes this final block continuously.
+# --- MAIN EXECUTION BLOCK ---
 
 if __name__ == "__main__":
     if DISCORD_TOKEN:
+        bot = RDU_BOT()
         try:
-            bot = RDU_BOT()
-            # The line that runs the bot using the token. This is the main loop.
             bot.run(DISCORD_TOKEN)
-        except discord.errors.LoginFailure:
-            logger.error("FATAL ERROR: Improper token has been passed. Check DISCORD_BOT_TOKEN.")
-        except Exception as e:
-            logger.error(f"--- BOT CRASHED DUE TO UNEXPECTED ERROR ---")
-            logger.error(f"Error Type: {e.__class__.__name__}")
-            logger.error(f"Error Message: {e}")
+        except discord.LoginFailure:
+            print("FATAL ERROR: Failed to log in. Check if the DISCORD_BOT_TOKEN is correct.")
+        except KeyboardInterrupt:
+            print("\nBot process interrupted by user. Shutting down...")
+            sys.exit(0)
+    else:
+        print("Bot failed to start due to missing token.")
