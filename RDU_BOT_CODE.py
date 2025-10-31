@@ -160,37 +160,58 @@ class RDU_BOT(commands.Bot):
             except discord.errors.Forbidden:
                 logger.error(f"Cannot send startup message to {self.log_channel.name}. Check bot permissions.")
 
-    async def _log_action(self, title: str, description: str, moderator: discord.Member, target: Optional[discord.User | discord.Member | discord.Object] = None, color: discord.Color = discord.Color.blue()):
-        """Central function to create and send embedded log messages to the bot-logs channel."""
+    async def _log_action(self, title: str, description: str, moderator: discord.Member, channel: discord.TextChannel | commands.Context | None, command_name: str, target: Optional[discord.User | discord.Member | discord.Object] = None, color: discord.Color = discord.Color.blue()):
+        """Central function to create and send embedded log messages to the bot-logs channel with enhanced visuals."""
         if not self.log_channel:
             logger.warning(f"Attempted to log action '{title}', but log channel is not configured.")
             return
 
+        # 1. Setup Embed with Title, Description, Color, and Timestamp
         log_embed = discord.Embed(
-            title=title,
+            title=f"**{title}**",
             description=description,
             color=color,
             timestamp=datetime.now()
         )
 
-        # Add moderator/context details
-        log_embed.add_field(name="Moderator", value=moderator.mention, inline=True)
-        if target:
-            # Handle User objects (for unban) and Member objects (for kick/ban)
-            if isinstance(target, discord.Member):
-                log_embed.add_field(name="Target User", value=target.mention, inline=True)
-                log_embed.add_field(name="Target ID", value=f"`{target.id}`", inline=True)
-            elif isinstance(target, discord.Object) or isinstance(target, discord.User):
-                # For unban where we only have ID
-                log_embed.add_field(name="Target ID", value=f"`{target.id}`", inline=True)
+        # 2. Add Moderator Info (Author for better look)
+        log_embed.set_author(
+            name=f"Action by {moderator.display_name}",
+            icon_url=moderator.display_avatar.url
+        )
 
-        # Set footer for context and source
-        log_embed.set_footer(text=f"Server: {moderator.guild.name} | Mod ID: {moderator.id}")
+        # 3. Add Context Info
+        channel_mention = channel.mention if channel and isinstance(channel, discord.TextChannel) else "N/A"
+        
+        log_embed.add_field(name="Command", value=f"`/{command_name}`", inline=True)
+        log_embed.add_field(name="Channel", value=channel_mention, inline=True)
+        log_embed.add_field(name="Moderator ID", value=f"`{moderator.id}`", inline=True)
+
+        # 4. Add Target Info
+        if target:
+            target_value = ""
+            if isinstance(target, discord.Member):
+                target_value = target.mention
+            elif isinstance(target, discord.User):
+                target_value = f"{target.name}"
+            elif isinstance(target, discord.Object):
+                target_value = "Unbanned User"
+
+            log_embed.add_field(name="\u200b", value="--- Target Details ---", inline=False) # Separator
+            log_embed.add_field(name="Target User", value=target_value, inline=True)
+            if hasattr(target, 'id'):
+                 log_embed.add_field(name="Target ID", value=f"`{target.id}`", inline=True)
+            else:
+                 log_embed.add_field(name="Target ID", value=f"N/A", inline=True)
+
+
+        # 5. Set Footer
+        log_embed.set_footer(text=f"Server: {moderator.guild.name}")
 
         try:
             await self.log_channel.send(embed=log_embed)
         except discord.errors.Forbidden:
-            logger.error(f"Cannot send logs to {self.log_channel.name}. Check bot permissions in that channel.")
+            logger.error(f"Cannot send logs to {self.log_channel.name}. Check bot permissions.")
         except Exception as e:
             logger.error(f"Error sending log message: {e}")
 
@@ -213,7 +234,8 @@ class RDU_BOT(commands.Bot):
             if message.flags.ephemeral:
                 return
 
-            self.loop.create_task(delete_after_30s(message))
+            # FIX APPLIED: Use self.bot.loop.create_task instead of self.loop.create_task
+            self.bot.loop.create_task(delete_after_30s(message))
         except discord.errors.NotFound:
             pass
         except Exception as e:
@@ -415,6 +437,8 @@ class CoreCommands(commands.Cog):
                 title="🔄 Commands Synced",
                 description=f"Successfully synced `{len(synced)}` commands globally.",
                 moderator=interaction.user,
+                channel=interaction.channel,
+                command_name=interaction.command.name,
                 color=discord.Color.blue()
             )
 
@@ -440,6 +464,8 @@ class CoreCommands(commands.Cog):
             title="🛑 Bot Shutting Down",
             description="Initiating safe shutdown sequence.",
             moderator=interaction.user,
+            channel=interaction.channel,
+            command_name=interaction.command.name,
             color=discord.Color.dark_red()
         )
 
@@ -542,6 +568,8 @@ class ModerationCommands(commands.Cog):
                 title="🔨 Member Kicked",
                 description=f"**Reason:** {reason}",
                 moderator=interaction.user,
+                channel=interaction.channel,
+                command_name=interaction.command.name,
                 target=member,
                 color=discord.Color.orange()
             )
@@ -579,6 +607,8 @@ class ModerationCommands(commands.Cog):
                 title="🚫 Member Banned",
                 description=f"**Reason:** {reason}",
                 moderator=interaction.user,
+                channel=interaction.channel,
+                command_name=interaction.command.name,
                 target=member,
                 color=discord.Color.red()
             )
@@ -610,6 +640,8 @@ class ModerationCommands(commands.Cog):
                 title="🔓 User Unbanned",
                 description=f"User ID `{user_id}` has been unbanned.",
                 moderator=interaction.user,
+                channel=interaction.channel,
+                command_name=interaction.command.name,
                 target=user_obj, # CHANGED: Ensure the discord.Object is passed for logging
                 color=discord.Color.green()
             )
@@ -646,6 +678,8 @@ class ModerationCommands(commands.Cog):
             title="🗑️ Messages Purged",
             description=f"Deleted **{len(deleted)}** messages in {interaction.channel.mention}.",
             moderator=interaction.user,
+            channel=interaction.channel,
+            command_name=interaction.command.name,
             color=discord.Color.dark_red()
         )
 
@@ -676,6 +710,8 @@ class ModerationCommands(commands.Cog):
             title="🔒 Channel Locked",
             description=f"{channel.mention} has been locked.",
             moderator=interaction.user,
+            channel=interaction.channel,
+            command_name=interaction.command.name,
             color=discord.Color.red()
         )
 
@@ -705,6 +741,8 @@ class ModerationCommands(commands.Cog):
             title="🔓 Channel Unlocked",
             description=f"{channel.mention} has been unlocked.",
             moderator=interaction.user,
+            channel=interaction.channel,
+            command_name=interaction.command.name,
             color=discord.Color.green()
         )
 
@@ -731,8 +769,10 @@ class ModerationCommands(commands.Cog):
         # Log the action
         await self.bot._log_action(
             title="🐌 Slowmode Updated",
-            description=f"{description}",
+            description=description,
             moderator=interaction.user,
+            channel=interaction.channel,
+            command_name=interaction.command.name,
             color=discord.Color.blue()
         )
 
@@ -775,6 +815,8 @@ class ModerationCommands(commands.Cog):
             title="⚠️ Member Warned",
             description=f"**Reason:** {reason}\n**Total Warnings:** {len(self.bot.user_warnings[guild_id_str][user_id_str])}",
             moderator=interaction.user,
+            channel=interaction.channel,
+            command_name=interaction.command.name,
             target=member,
             color=discord.Color.yellow()
         )
@@ -896,8 +938,10 @@ class AutoDetectCommands(commands.Cog):
         # Log the action
         await self.bot._log_action(
             title="📝 Auto-Response SET",
-            description=f"Auto-response rule created/updated for server.",
+            description=f"Auto-response rule created/updated for server. **Keyword:** `{keyword}`\n**Response:** `{response}`\n**Justification:** {justification}",
             moderator=interaction.user,
+            channel=interaction.channel,
+            command_name=interaction.command.name,
             color=discord.Color.purple()
         )
 
@@ -925,6 +969,8 @@ class AutoDetectCommands(commands.Cog):
                 title="🗑️ Auto-Response RESET",
                 description="Auto-response rule removed for server.",
                 moderator=interaction.user,
+                channel=interaction.channel,
+                command_name=interaction.command.name,
                 color=discord.Color.dark_red()
             )
 
