@@ -333,10 +333,11 @@ class RDU_BOT(commands.Bot):
                 # Customize the response (replace {server_id} with the actual ID)
                 final_response = response_template.replace('{server_id}', str(guild_id))
 
-                # CHANGED: Wrap the plain text response in an embed
+                # CHANGED: Wrap the plain text response in an embed, removing the loud title
+                # The user requested to remove the title and just have the response.
                 response_embed = discord.Embed(
-                    title="🚨 Auto-Detection Triggered",
-                    description=final_response,
+                    title="\u200b", # Zero-width space for minimal title/no title field
+                    description=f"🚨 {final_response}",
                     color=discord.Color.red()
                 )
                 response_embed.set_footer(text=f"Rule: {settings['justification']}")
@@ -670,7 +671,7 @@ class ModerationCommands(commands.Cog):
                 moderator=interaction.user,
                 channel=interaction.channel,
                 command_name=interaction.command.name,
-                target=user_obj, # CHANGED: Ensure the discord.Object is passed for logging
+                target=user_obj,
                 color=discord.Color.green()
             )
 
@@ -932,14 +933,13 @@ class AutoDetectCommands(commands.Cog):
     @commands.is_owner()
     async def autodetect_legacy(self, ctx: commands.Context):
         """Hidden command to give instructions for the slash command to the owner."""
-        # CHANGED: Ensure this legacy response is also an embed
         embed = discord.Embed(
             title="🤖 Auto-Response Setup",
             description="Please use the **`/autoreset`** or **`/autoset`** slash commands for configuration. This command is deprecated.",
             color=discord.Color.blue()
         )
-        await ctx.send(embed=embed, delete_after=30)
-        # END CHANGED
+        # CHANGED: Use delete_after instead of scheduling an async task as it's a legacy command on a Context object.
+        await ctx.send(embed=embed, delete_after=30) 
 
     @app_commands.command(name="autoset", description="[Admin Only] Sets a keyword auto-response for the server.")
     @app_commands.checks.has_permissions(administrator=True)
