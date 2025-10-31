@@ -234,8 +234,9 @@ class RDU_BOT(commands.Bot):
             if message.flags.ephemeral:
                 return
 
-            # FIX APPLIED: Use self.bot.loop.create_task instead of self.loop.create_task
-            self.bot.loop.create_task(delete_after_30s(message))
+            # FIX APPLIED: Reverted to self.loop.create_task because this method is inside RDU_BOT (the bot itself),
+            # which does not have a 'bot' attribute.
+            self.loop.create_task(delete_after_30s(message))
         except discord.errors.NotFound:
             pass
         except Exception as e:
