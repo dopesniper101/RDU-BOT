@@ -7,6 +7,8 @@ from datetime import datetime
 import asyncio
 import random
 from typing import Optional
+import json
+# END ADDED IMPORT
 
 # Imports will now succeed because the Colab launcher guaranteed the installation
 import discord
@@ -79,8 +81,42 @@ class RDU_BOT(commands.Bot):
         self.log_channel_name = LOG_CHANNEL_NAME
         self.admin_id = ADMIN_ID
         self.log_channel = None # Initialize log channel object for global access
+        
+        # --- ADDITIONS FOR PERSISTENCE ---
+        self.config_file = 'autodetect_config.json'
+        config_data = self.load_config()
         # Auto-detection settings: {guild_id: {'keyword': str, 'justification': str, 'response': str}}
-        self.detection_settings = {}
+        self.detection_settings = config_data.get('detection_settings', {})
+        # Warning settings: {guild_id: {user_id: [warning_record, ...]}}
+        self.user_warnings = config_data.get('user_warnings', {})
+        # --- END ADDITIONS ---
+
+    # --- ADDED METHODS FOR CONFIG MANAGEMENT ---
+    def load_config(self):
+        """Loads all persistent settings from a file."""
+        try:
+            with open(self.config_file, 'r') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            logger.warning(f"Config file {self.config_file} not found. Starting with empty settings.")
+            return {'detection_settings': {}, 'user_warnings': {}}
+        except Exception as e:
+            logger.error(f"Error loading config file: {e}")
+            return {'detection_settings': {}, 'user_warnings': {}}
+
+    def save_config(self):
+        """Saves all persistent settings to a file."""
+        try:
+            save_data = {
+                'detection_settings': self.detection_settings,
+                'user_warnings': self.user_warnings
+            }
+            with open(self.config_file, 'w') as f:
+                json.dump(save_data, f, indent=4)
+        except Exception as e:
+            logger.error(f"Error saving config file: {e}")
+    # --- END ADDED METHODS ---
+
 
     async def setup_hook(self):
         """Called immediately before bot goes online to load cogs/classes."""
@@ -124,7 +160,7 @@ class RDU_BOT(commands.Bot):
             except discord.errors.Forbidden:
                 logger.error(f"Cannot send startup message to {self.log_channel.name}. Check bot permissions.")
 
-    async def _log_action(self, title: str, description: str, moderator: discord.Member, target: Optional[discord.User | discord.Member] = None, color: discord.Color = discord.Color.blue()):
+    async def _log_action(self, title: str, description: str, moderator: discord.Member, target: Optional[discord.User | discord.Member | discord.Object] = None, color: discord.Color = discord.Color.blue()):
         """Central function to create and send embedded log messages to the bot-logs channel."""
         if not self.log_channel:
             logger.warning(f"Attempted to log action '{title}', but log channel is not configured.")
@@ -228,6 +264,11 @@ class RDU_BOT(commands.Bot):
         if message.author == self.user or not message.guild:
             return
 
+        # ADDED CHECKS: Ignore messages that are commands, bot responses, or thread messages
+        if message.content.startswith('!') or message.type != discord.MessageType.default or message.is_system():
+            return
+        # END ADDED CHECKS
+
         guild_id = message.guild.id
 
         # Check if a detection rule is set for this server
@@ -242,8 +283,19 @@ class RDU_BOT(commands.Bot):
                 # Customize the response (replace {server_id} with the actual ID)
                 final_response = response_template.replace('{server_id}', str(guild_id))
 
+                # CHANGED: Wrap the plain text response in an embed
+                response_embed = discord.Embed(
+                    title="🚨 Auto-Detection Triggered",
+                    description=final_response,
+                    color=discord.Color.red()
+                )
+                response_embed.set_footer(text=f"Rule: {settings['justification']}")
                 # Send the customized response in the same channel as the message
-                await message.channel.send(final_response)
+                sent_message = await message.channel.send(embed=response_embed)
+                
+                # Auto-delete the response (assuming auto-delete is desired for auto-responses)
+                self.loop.create_task(delete_after_30s(sent_message))
+                # END CHANGED
 
         # Important: Process commands after the on_message logic
         await self.process_commands(message)
@@ -550,15 +602,15 @@ class ModerationCommands(commands.Cog):
     async def unban_command(self, interaction: discord.Interaction, user_id: str):
         await interaction.response.defer(thinking=True)
         try:
-            user = discord.Object(id=int(user_id))
-            await interaction.guild.unban(user)
+            user_obj = discord.Object(id=int(user_id))
+            await interaction.guild.unban(user_obj)
 
             # Log the action
             await self.bot._log_action(
                 title="🔓 User Unbanned",
                 description=f"User ID `{user_id}` has been unbanned.",
                 moderator=interaction.user,
-                target=user,
+                target=user_obj, # CHANGED: Ensure the discord.Object is passed for logging
                 color=discord.Color.green()
             )
 
@@ -692,6 +744,62 @@ class ModerationCommands(commands.Cog):
         )
         await interaction.response.send_message(embed=embed)
 
+    # --- ADDED COMMAND: WARN ---
+    @app_commands.command(name="warn", description="Issues a formal warning to a member.")
+    @app_commands.checks.has_permissions(kick_members=True)
+    async def warn_command(self, interaction: discord.Interaction, member: discord.Member, reason: str):
+        await interaction.response.defer(thinking=True, ephemeral=True)
+
+        user_id_str = str(member.id)
+        guild_id_str = str(interaction.guild.id)
+
+        # 1. Initialize warnings if they don't exist for the user/guild
+        if guild_id_str not in self.bot.user_warnings:
+            self.bot.user_warnings[guild_id_str] = {}
+        if user_id_str not in self.bot.user_warnings[guild_id_str]:
+            self.bot.user_warnings[guild_id_str][user_id_str] = []
+
+        # 2. Record the warning
+        warning_record = {
+            'timestamp': datetime.now().isoformat(),
+            'moderator_id': interaction.user.id,
+            'reason': reason
+        }
+        self.bot.user_warnings[guild_id_str][user_id_str].append(warning_record)
+
+        # 3. Save the new state
+        self.bot.save_config()
+
+        # 4. Log the action
+        await self.bot._log_action(
+            title="⚠️ Member Warned",
+            description=f"**Reason:** {reason}\n**Total Warnings:** {len(self.bot.user_warnings[guild_id_str][user_id_str])}",
+            moderator=interaction.user,
+            target=member,
+            color=discord.Color.yellow()
+        )
+
+        # 5. Notify the user privately (if possible)
+        try:
+            dm_embed = discord.Embed(
+                title=f"⚠️ You Have Been Warned in {interaction.guild.name}",
+                description=f"**Reason:** {reason}\nThis is warning **#{len(self.bot.user_warnings[guild_id_str][user_id_str])}**.",
+                color=discord.Color.yellow()
+            )
+            await member.send(embed=dm_embed)
+        except discord.errors.Forbidden:
+            logger.warning(f"Could not DM warning to {member.name}.")
+
+        # 6. Send public/ephemeral confirmation
+        embed = create_embed(
+            title="⚠️ Member Warned",
+            description=f"{member.mention} was issued warning **#{len(self.bot.user_warnings[guild_id_str][user_id_str])}** by {interaction.user.mention}.",
+            color=discord.Color.yellow()
+        )
+        embed.add_field(name="Reason", value=reason, inline=False)
+        await interaction.followup.send(embed=embed)
+    # --- END ADDED COMMAND ---
+
 
 # --- 3. FUN COMMANDS CLASS ---
 
@@ -754,12 +862,14 @@ class AutoDetectCommands(commands.Cog):
     @commands.is_owner()
     async def autodetect_legacy(self, ctx: commands.Context):
         """Hidden command to give instructions for the slash command to the owner."""
+        # CHANGED: Ensure this legacy response is also an embed
         embed = discord.Embed(
             title="🤖 Auto-Response Setup",
             description="Please use the **`/autoreset`** or **`/autoset`** slash commands for configuration. This command is deprecated.",
             color=discord.Color.blue()
         )
         await ctx.send(embed=embed, delete_after=30)
+        # END CHANGED
 
     @app_commands.command(name="autoset", description="[Admin Only] Sets a keyword auto-response for the server.")
     @app_commands.checks.has_permissions(administrator=True)
@@ -779,6 +889,9 @@ class AutoDetectCommands(commands.Cog):
             'justification': justification,
             'response': response
         }
+        # ADDED CONFIG SAVE
+        self.bot.save_config()
+        # END ADDED CONFIG SAVE
 
         # Log the action
         await self.bot._log_action(
@@ -803,6 +916,9 @@ class AutoDetectCommands(commands.Cog):
 
         if guild_id in self.bot.detection_settings:
             del self.bot.detection_settings[guild_id]
+            # ADDED CONFIG SAVE
+            self.bot.save_config()
+            # END ADDED CONFIG SAVE
 
             # Log the action
             await self.bot._log_action(
