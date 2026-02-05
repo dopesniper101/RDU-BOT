@@ -1,322 +1,224 @@
+# Installation commands for environment setup
+import os
+import sys
+
+# Detect if running in a container (Railway) or Colab
+if os.environ.get('RAILWAY_ENVIRONMENT') or os.environ.get('TOKEN'):
+    print("Running in Production/Railway environment.")
+else:
+    # Only run pip install automatically in Colab/Local to avoid startup delays on Railway
+    os.system("pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib discord.py")
+
+import logging
+import pickle
+import mimetypes
+import asyncio
+import csv
+from datetime import datetime
+from typing import Optional
+
+# Google API Imports
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from googleapiclient.errors import HttpError
+
+# Discord Imports
 import discord
 from discord.ext import commands
-from discord import app_commands
-import os
-from dotenv import load_dotenv
-import asyncio
-import logging
-from datetime import datetime
+from discord import app_commands, utils
+from discord.ext.commands import is_owner
 
-# Load environment variables
-load_dotenv()
+# --- CONFIGURATION ---
 
-# Set up logging for DM attempts
+# Pulling from Railway's "Variables" tab
+DISCORD_TOKEN = os.environ.get('DISCORD_BOT_TOKEN') or os.environ.get('TOKEN')
+BOT_NAME = "RUST DOWN UNDER"
+DESCRIPTION = "A Discord bot for the RUST DOWN UNDER community"
+LOG_CHANNEL_NAME = "bot-logs"
+# ⚠️ Ensure this is your actual Discord User ID for @is_owner() commands to work
+ADMIN_ID = 123456789012345678 
+
+# --- LOGGING SETUP ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def log_dm_attempt(user, command_name):
-    """Log DM command attempts"""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    log_message = f"DM ATTEMPT - User: {user.name}#{user.discriminator} (ID: {user.id}) tried command: /{command_name} at {timestamp}"
-    logger.warning(log_message)
-    print(f"⚠️  {log_message}")
+# --- UTILITY FUNCTIONS ---
+def create_embed(title: str, description: str, color: discord.Color = discord.Color.blue(), footer: str = "RDU System Message") -> discord.Embed:
+    """Creates a standardized embed for all bot responses."""
+    embed = discord.Embed(
+        title=title, 
+        description=description, 
+        color=color, 
+        timestamp=datetime.now()
+    )
+    embed.set_footer(text=footer)
+    return embed
 
-# Bot configuration
-BOT_NAME = "RUST DOWN UNDER"
-DESCRIPTION = "A Discord bot for the RUST DOWN UNDER community"
+# --- GOOGLE DRIVE INTEGRATION ---
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
-# Set up bot intents
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
-intents.guilds = True
-
-# Create bot instance
-bot = commands.Bot(command_prefix='!', intents=intents, description=DESCRIPTION)
-
-@bot.event
-async def on_ready():
-    """Event triggered when the bot is ready"""
-    print(f'{BOT_NAME} is now online!')
-    print(f'Bot name: {bot.user}')
-    print(f'Bot ID: {bot.user.id if bot.user else "Unknown"}')
-    print('------')
-    
-    # Sync slash commands
+def get_gdrive_service():
+    creds = None
+    if os.path.exists('token.pickle'):
+        with open('token.pickle', 'rb') as token:
+            creds = pickle.load(token)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            if not os.path.exists('credentials.json'):
+                logger.error("Missing credentials.json.")
+                return None
+            flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open('token.pickle', 'wb') as token:
+            pickle.dump(creds, token)
     try:
-        synced = await bot.tree.sync()
-        print(f'Synced {len(synced)} command(s)')
+        return build('drive', 'v3', credentials=creds)
     except Exception as e:
-        print(f'Failed to sync commands: {e}')
+        logger.error(f"Google Drive Auth Error: {e}")
+        return None
 
-@bot.event
-async def on_member_join(member):
-    """Welcome new members"""
-    channel = discord.utils.get(member.guild.channels, name='welcome')
-    if channel:
-        embed = discord.Embed(
-            title="Welcome to RUST DOWN UNDER!",
-            description=f"G'day {member.mention}! Welcome to the server mate! 🇦🇺",
-            color=discord.Color.green()
+def upload_to_drive(file_path: str, folder_id: Optional[str] = None) -> Optional[str]:
+    if not os.path.exists(file_path): return None
+    try:
+        service = get_gdrive_service()
+        if not service: return None
+        mimetype = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
+        file_metadata = {'name': os.path.basename(file_path)}
+        if folder_id: file_metadata['parents'] = [folder_id]
+        media = MediaFileUpload(file_path, mimetype=mimetype, resumable=True)
+        file = service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        return file.get('id')
+    except Exception as e:
+        logger.error(f"Drive Upload Error: {e}")
+        return None
+
+# --- BOT CLASS ---
+class RDU_BOT(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True 
+        intents.members = True
+        super().__init__(
+            command_prefix="!", 
+            description=DESCRIPTION, 
+            intents=intents, 
+            owner_id=ADMIN_ID
         )
-        embed.set_thumbnail(url=member.avatar.url if member.avatar else None)
-        await channel.send(embed=embed)
+        # Dictionary to store settings in memory
+        self.detection_settings = {} 
 
-@bot.tree.command(name="ping", description="Check if the bot is responsive")
-async def ping(interaction: discord.Interaction):
-    """Ping command to test bot responsiveness"""
-    if not interaction.guild:
-        log_dm_attempt(interaction.user, "ping")
-        await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
-        return
+    async def _log_to_channel(self, embed: discord.Embed):
+        """Finds the log channel in any server the bot is in and sends the log."""
+        for guild in self.guilds:
+            channel = utils.get(guild.text_channels, name=LOG_CHANNEL_NAME)
+            if channel:
+                await channel.send(embed=embed)
+
+    async def on_ready(self):
+        logger.info(f"Logged in as {self.user} (ID: {self.user.id})")
+        print(f"--- {BOT_NAME} IS ONLINE ---")
+        try:
+            synced = await self.tree.sync()
+            logger.info(f"Synced {len(synced)} slash commands.")
+        except Exception as e:
+            logger.error(f"Command sync failed: {e}")
+
+    # --- FULL LOGGING SUITE ---
+    async def on_member_join(self, member):
+        embed = create_embed("📥 Member Joined", f"{member.mention} joined the server.", discord.Color.green(), f"User ID: {member.id}")
+        await self._log_to_channel(embed)
+
+    async def on_member_remove(self, member):
+        embed = create_embed("📤 Member Left", f"**{member.name}** has left the server.", discord.Color.red(), f"User ID: {member.id}")
+        await self._log_to_channel(embed)
+
+    async def on_message_delete(self, message):
+        if message.author.bot: return
+        embed = create_embed("🗑️ Message Deleted", f"**Author:** {message.author.mention}\n**Channel:** {message.channel.mention}\n**Content:** {message.content}", discord.Color.orange(), "Audit Log")
+        await self._log_to_channel(embed)
+
+    async def on_message_edit(self, before, after):
+        if before.author.bot or before.content == after.content: return
+        embed = create_embed("✏️ Message Edited", f"**Author:** {before.author.mention}\n**Channel:** {before.channel.mention}\n**Before:** {before.content}\n**After:** {after.content}", discord.Color.blue(), "Audit Log")
+        await self._log_to_channel(embed)
+
+    async def on_message(self, message):
+        if message.author.bot: return
         
-    latency = round(bot.latency * 1000)
-    embed = discord.Embed(
-        title="🏓 Pong!",
-        description=f"Bot latency: {latency}ms",
-        color=discord.Color.blue()
-    )
-    await interaction.response.send_message(embed=embed)
+        # Auto-response System
+        guild_id = message.guild.id if message.guild else None
+        if guild_id and guild_id in self.detection_settings:
+            settings = self.detection_settings[guild_id]
+            if settings['keyword'] in message.content.lower():
+                # All messages are now embedded
+                response_embed = create_embed("🤖 System Response", settings['response'], discord.Color.gold(), "Auto-deleting in 30s")
+                await message.channel.send(embed=response_embed, delete_after=30)
+                
+                log_embed = create_embed("🎯 Auto-Response Triggered", f"**Keyword:** `{settings['keyword']}`\n**User:** {message.author.mention}", discord.Color.light_gray())
+                await self._log_to_channel(log_embed)
 
-@bot.tree.command(name="serverinfo", description="Display server information")
-async def serverinfo(interaction: discord.Interaction):
-    """Show server information"""
-    guild = interaction.guild
-    if not guild:
-        log_dm_attempt(interaction.user, "serverinfo")
-        await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
-        return
+        await self.process_commands(message)
+
+    # --- SLASH COMMANDS ---
+    @app_commands.command(name="ping", description="Check the bot's heartbeat.")
+    async def ping(self, interaction: discord.Interaction):
+        latency = round(self.latency * 1000)
+        embed = create_embed("🏓 Pong!", f"Bot latency is **{latency}ms**.", discord.Color.green())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="set_autoresponse", description="Set a trigger word and embedded response.")
+    @is_owner()
+    async def set_auto(self, interaction: discord.Interaction, keyword: str, response: str):
+        self.detection_settings[interaction.guild_id] = {'keyword': keyword.lower(), 'response': response}
+        embed = create_embed("✅ Auto-Response Updated", f"Keyword: `{keyword.lower()}`\nResponse: `{response}`", discord.Color.green())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         
-    embed = discord.Embed(
-        title=f"Server Info: {guild.name}",
-        color=discord.Color.orange()
-    )
-    embed.add_field(name="Owner", value=guild.owner.mention if guild.owner else "Unknown", inline=True)
-    embed.add_field(name="Members", value=guild.member_count, inline=True)
-    embed.add_field(name="Channels", value=len(guild.channels), inline=True)
-    embed.add_field(name="Roles", value=len(guild.roles), inline=True)
-    embed.add_field(name="Created", value=guild.created_at.strftime("%B %d, %Y"), inline=True)
-    
-    if guild.icon:
-        embed.set_thumbnail(url=guild.icon.url)
-    
-    await interaction.response.send_message(embed=embed)
+        await self._log_to_channel(create_embed("⚙️ Settings Changed", f"Auto-response set by {interaction.user.mention}", discord.Color.blue()))
 
-@bot.tree.command(name="userinfo", description="Display user information")
-@app_commands.describe(user="The user to get information about")
-async def userinfo(interaction: discord.Interaction, user: discord.Member = None):
-    """Show user information"""
-    if user is None:
-        if not interaction.guild:
-            log_dm_attempt(interaction.user, "userinfo")
-            await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
-            return
-        if not isinstance(interaction.user, discord.Member):
-            await interaction.response.send_message("Unable to get user information!", ephemeral=True)
-            return
-        user = interaction.user
-    
-    embed = discord.Embed(
-        title=f"User Info: {user.display_name}",
-        color=discord.Color.purple()
-    )
-    embed.add_field(name="Username", value=f"{user.name}#{user.discriminator}", inline=True)
-    embed.add_field(name="ID", value=user.id, inline=True)
-    embed.add_field(name="Joined Server", value=user.joined_at.strftime("%B %d, %Y") if user.joined_at else "Unknown", inline=True)
-    embed.add_field(name="Account Created", value=user.created_at.strftime("%B %d, %Y"), inline=True)
-    embed.add_field(name="Roles", value=len(user.roles) - 1, inline=True)  # -1 to exclude @everyone
-    
-    if user.avatar:
-        embed.set_thumbnail(url=user.avatar.url)
-    
-    await interaction.response.send_message(embed=embed)
-
-@bot.tree.command(name="testwelcome", description="Test the welcome message")
-async def testwelcome(interaction: discord.Interaction):
-    """Test what the welcome message looks like"""
-    if not interaction.guild:
-        log_dm_attempt(interaction.user, "testwelcome")
-        await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
-        return
+    @app_commands.command(name="backup_logs", description="Export server status to Google Drive.")
+    @is_owner()
+    async def backup(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"rdu_backup_{timestamp}.csv"
         
-    embed = discord.Embed(
-        title="Welcome to RUST DOWN UNDER!",
-        description=f"G'day {interaction.user.mention}! Welcome to the server mate! 🇦🇺",
-        color=discord.Color.green()
-    )
-    embed.set_thumbnail(url=interaction.user.avatar.url if interaction.user.avatar else None)
-    embed.set_footer(text="This is a preview of the welcome message new members will see")
-    await interaction.response.send_message(embed=embed)
+        try:
+            with open(filename, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["Timestamp", "Guild Name", "Member Count"])
+                for g in self.guilds:
+                    writer.writerow([datetime.now().isoformat(), g.name, g.member_count])
+            
+            file_id = upload_to_drive(filename)
+            if file_id:
+                msg = f"✅ Backup successful. Drive File ID: `{file_id}`"
+                color = discord.Color.green()
+                os.remove(filename) # Cleanup
+            else:
+                msg = "❌ Backup failed. Check credentials/permissions."
+                color = discord.Color.red()
+            
+            status_embed = create_embed("💾 Drive Backup", msg, color)
+            await interaction.followup.send(embed=status_embed)
+            await self._log_to_channel(status_embed)
+        except Exception as e:
+            await interaction.followup.send(f"Critical Error: {e}")
 
-@bot.tree.command(name="help", description="Show available commands")
-async def help_command(interaction: discord.Interaction):
-    """Display help information"""
-    if not interaction.guild:
-        log_dm_attempt(interaction.user, "help")
-        await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
-        return
-        
-    embed = discord.Embed(
-        title=f"{BOT_NAME} - Available Commands",
-        description="Here are the commands you can use:",
-        color=discord.Color.gold()
-    )
-    
-    embed.add_field(
-        name="General Commands", 
-        value="""
-        `/ping` - Check bot responsiveness
-        `/serverinfo` - Show server information
-        `/userinfo` - Show user information
-        `/testwelcome` - Test the welcome message
-        `/help` - Show this help message
-        """, 
-        inline=False
-    )
-    
-    embed.add_field(
-        name="Moderation Commands", 
-        value="""
-        `/kick` - Kick a user from the server
-        `/ban` - Ban a user from the server
-        `/mute` - Mute a user
-        """, 
-        inline=False
-    )
-    
-    embed.set_footer(text="Use slash commands (/) to interact with the bot")
-    await interaction.response.send_message(embed=embed)
-
-# Moderation Commands
-@bot.tree.command(name="kick", description="Kick a user from the server")
-@app_commands.describe(user="The user to kick", reason="Reason for the kick")
-async def kick(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
-    """Kick a user from the server"""
-    if not interaction.guild:
-        log_dm_attempt(interaction.user, "kick")
-        await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
-        return
-        
-    if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.kick_members:
-        await interaction.response.send_message("You don't have permission to kick members!", ephemeral=True)
-        return
-    
-    if user.top_role >= interaction.user.top_role and interaction.user != interaction.guild.owner:
-        await interaction.response.send_message("You can't kick someone with a higher or equal role!", ephemeral=True)
-        return
-    
-    try:
-        await user.kick(reason=f"Kicked by {interaction.user}: {reason}")
-        embed = discord.Embed(
-            title="User Kicked",
-            description=f"{user.mention} has been kicked from the server.",
-            color=discord.Color.red()
-        )
-        embed.add_field(name="Reason", value=reason, inline=False)
-        embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
-        await interaction.response.send_message(embed=embed)
-    except discord.Forbidden:
-        await interaction.response.send_message("I don't have permission to kick this user!", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"An error occurred: {e}", ephemeral=True)
-
-@bot.tree.command(name="ban", description="Ban a user from the server")
-@app_commands.describe(user="The user to ban", reason="Reason for the ban")
-async def ban(interaction: discord.Interaction, user: discord.Member, reason: str = "No reason provided"):
-    """Ban a user from the server"""
-    if not interaction.guild:
-        log_dm_attempt(interaction.user, "ban")
-        await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
-        return
-        
-    if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.ban_members:
-        await interaction.response.send_message("You don't have permission to ban members!", ephemeral=True)
-        return
-    
-    if user.top_role >= interaction.user.top_role and interaction.user != interaction.guild.owner:
-        await interaction.response.send_message("You can't ban someone with a higher or equal role!", ephemeral=True)
-        return
-    
-    try:
-        await user.ban(reason=f"Banned by {interaction.user}: {reason}")
-        embed = discord.Embed(
-            title="User Banned",
-            description=f"{user.mention} has been banned from the server.",
-            color=discord.Color.dark_red()
-        )
-        embed.add_field(name="Reason", value=reason, inline=False)
-        embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
-        await interaction.response.send_message(embed=embed)
-    except discord.Forbidden:
-        await interaction.response.send_message("I don't have permission to ban this user!", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"An error occurred: {e}", ephemeral=True)
-
-@bot.tree.command(name="mute", description="Mute a user in the server")
-@app_commands.describe(user="The user to mute", duration="Duration in minutes", reason="Reason for the mute")
-async def mute(interaction: discord.Interaction, user: discord.Member, duration: int = 60, reason: str = "No reason provided"):
-    """Mute a user for a specified duration"""
-    if not interaction.guild:
-        log_dm_attempt(interaction.user, "mute")
-        await interaction.response.send_message("This bot only works in servers, not DMs!", ephemeral=True)
-        return
-        
-    if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.moderate_members:
-        await interaction.response.send_message("You don't have permission to mute members!", ephemeral=True)
-        return
-    
-    if user.top_role >= interaction.user.top_role and interaction.user != interaction.guild.owner:
-        await interaction.response.send_message("You can't mute someone with a higher or equal role!", ephemeral=True)
-        return
-    
-    try:
-        # Convert duration to timedelta
-        from datetime import datetime, timedelta
-        timeout_until = discord.utils.utcnow() + timedelta(minutes=duration)
-        
-        await user.timeout(timeout_until, reason=f"Muted by {interaction.user}: {reason}")
-        embed = discord.Embed(
-            title="User Muted",
-            description=f"{user.mention} has been muted for {duration} minutes.",
-            color=discord.Color.yellow()
-        )
-        embed.add_field(name="Reason", value=reason, inline=False)
-        embed.add_field(name="Duration", value=f"{duration} minutes", inline=True)
-        embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
-        await interaction.response.send_message(embed=embed)
-    except discord.Forbidden:
-        await interaction.response.send_message("I don't have permission to mute this user!", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"An error occurred: {e}", ephemeral=True)
-
-# Error handling
-@bot.event
-async def on_command_error(ctx, error):
-    """Handle command errors"""
-    if isinstance(error, commands.CommandNotFound):
-        return
-    elif isinstance(error, commands.MissingPermissions):
-        await ctx.send("You don't have permission to use this command!")
-    else:
-        print(f'Error: {error}')
-        await ctx.send("An error occurred while processing the command.")
-
-# Run the bot
-async def main():
-    """Main function to run the bot"""
-    discord_token = os.getenv('DISCORD_BOT_TOKEN')
-    
-    if not discord_token:
-        print("ERROR: DISCORD_BOT_TOKEN not found in environment variables!")
-        print("Please add your Discord bot token to the environment secrets.")
-        return
-    
-    try:
-        await bot.start(discord_token)
-    except discord.LoginFailure:
-        print("ERROR: Invalid Discord bot token!")
-    except Exception as e:
-        print(f"ERROR: Failed to start bot: {e}")
+# --- EXECUTION ---
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if DISCORD_TOKEN:
+        bot = RDU_BOT()
+        try:
+            bot.run(DISCORD_TOKEN)
+        except discord.PrivilegedIntentsRequired:
+            print("FATAL: You must enable 'Message Content Intent' in the Discord Dev Portal.")
+        except discord.LoginFailure:
+            print("FATAL: Invalid Token. Check Railway Variables.")
+    else:
+        print("FATAL: DISCORD_BOT_TOKEN environment variable not found.")
