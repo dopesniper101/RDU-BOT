@@ -3,147 +3,130 @@ import logging
 import discord
 import asyncio
 from datetime import datetime
-from typing import Final, Optional, List
+from typing import Final, Optional, Union
 from discord import app_commands
 from discord.ext import commands
+from supabase import create_client, Client
 
 # --- CONFIGURATION ---
 class Config:
+    # Discord
     TOKEN: Final = os.environ.get('DISCORD_TOKEN')
-    # Default to 0 if not provided to avoid int() conversion errors
-    GUILD_ID: Final = int(os.environ.get('GUILD_ID', 0)) 
+    GUILD_ID: Final = int(os.environ.get('GUILD_ID', 1468873461207142556))
+    ADMIN_ROLE_ID: Final = 1095005926534168646
     LOG_CHANNEL_NAME: Final = "bot-logs"
-    VERSION: Final = "v2.2.0"
+    VERSION: Final = "v3.1.0-PRO"
     BOT_NAME: Final = "RUST DOWN UNDER"
-    COLOR_SUCCESS: Final = discord.Color.green()
-    COLOR_ERROR: Final = discord.Color.red()
-    COLOR_INFO: Final = discord.Color.blue()
-    COLOR_WARNING: Final = discord.Color.gold()
 
-# --- LOGGING SETUP ---
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s | %(levelname)s | %(name)s: %(message)s'
-)
-logger = logging.getLogger("RDU_SYSTEM")
+    # Supabase (Injected from your provided credentials)
+    SUPABASE_URL: Final = "https://mstmpktndqddfzsrumek.supabase.co"
+    SUPABASE_KEY: Final = os.environ.get('SUPABASE_SERVICE_ROLE_KEY', "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
 
-# --- UI UTILS ---
+# --- LOGGING ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(name)s: %(message)s')
+logger = logging.getLogger("RDU_CORE")
+
+# --- UI FACTORY ---
 class EmbedFactory:
-    """Centralized factory to ensure consistent branding across all commands."""
     @staticmethod
-    def create(
-        title: str, 
-        description: str, 
-        color: discord.Color = Config.COLOR_INFO,
-        footer_ext: Optional[str] = None
-    ) -> discord.Embed:
-        embed = discord.Embed(
-            title=title, 
-            description=description, 
-            color=color, 
-            timestamp=datetime.utcnow()
-        )
-        footer_text = f"{Config.BOT_NAME} {Config.VERSION}"
-        if footer_ext:
-            footer_text += f" | {footer_ext}"
-        embed.set_footer(text=footer_text)
+    def build(title: str, description: str, color: discord.Color = discord.Color.blue(), thumb: str = None) -> discord.Embed:
+        embed = discord.Embed(title=title, description=description, color=color, timestamp=datetime.utcnow())
+        embed.set_footer(text=f"{Config.BOT_NAME} | {Config.VERSION}")
+        if thumb:
+            embed.set_thumbnail(url=thumb)
         return embed
 
-# --- MODERATION COG ---
+# --- DATA ACCESS LAYER ---
+class SupabaseManager:
+    def __init__(self):
+        self.client: Client = create_client(Config.SUPABASE_URL, Config.SUPABASE_KEY)
+
+    async def log_audit(self, mod_id: int, action: str, target_id: Optional[int], reason: str):
+        """Saves moderation actions to Supabase."""
+        data = {
+            "moderator_id": str(mod_id),
+            "action": action,
+            "target_id": str(target_id) if target_id else None,
+            "reason": reason
+        }
+        # Run in thread to prevent blocking the event loop
+        return await asyncio.to_thread(self.client.table("audit_logs").insert(data).execute)
+
+    async def get_config(self, key: str) -> Optional[str]:
+        """Retrieves dynamic config (like wipe dates) from Supabase."""
+        res = await asyncio.to_thread(self.client.table("server_config").select("value").eq("key", key).maybe_single().execute)
+        return res.data['value'] if res.data else None
+
+# --- COGS ---
 class Moderation(commands.Cog):
     def __init__(self, bot: 'RDUBot'):
         self.bot = bot
 
-    @app_commands.command(name="ban", description="Permanently ban a member and purge messages")
+    @app_commands.command(name="ban", description="Ban a member and log to Database")
     @app_commands.checks.has_permissions(ban_members=True)
-    @app_commands.describe(member="The target user", reason="Reason for the ban")
     async def ban(self, it: discord.Interaction, member: discord.Member, reason: str = "No reason provided"):
         if member.top_role >= it.user.top_role:
-            return await it.response.send_message("❌ Cannot action user with higher/equal role.", ephemeral=True)
+            return await it.response.send_message("❌ Cannot ban users with higher/equal roles.", ephemeral=True)
         
-        await member.ban(reason=f"Mod: {it.user.name} | {reason}")
-        embed = EmbedFactory.create("🔨 Member Banned", f"**Target:** {member.mention}\n**Reason:** {reason}\n**Moderator:** {it.user.mention}", Config.COLOR_ERROR)
+        await member.ban(reason=reason)
+        await self.bot.db.log_audit(it.user.id, "BAN", member.id, reason)
+        
+        embed = EmbedFactory.build("🔨 Member Banned", f"Target: {member.mention}\nReason: {reason}", discord.Color.red())
         await it.response.send_message(embed=embed)
-        await self.bot.log_action(it.guild, embed)
+        await self.bot.dispatch_log(it.guild, embed)
 
     @app_commands.command(name="clear", description="Bulk delete messages")
     @app_commands.checks.has_permissions(manage_messages=True)
-    @app_commands.describe(amount="Amount of messages to remove (1-100)")
     async def clear(self, it: discord.Interaction, amount: int):
         if not 1 <= amount <= 100:
-            return await it.response.send_message("❌ Please provide a number between 1 and 100.", ephemeral=True)
-            
+            return await it.response.send_message("❌ Range 1-100 only.", ephemeral=True)
         await it.response.defer(ephemeral=True)
         deleted = await it.channel.purge(limit=amount)
         await it.edit_original_response(content=f"🧹 Purged {len(deleted)} messages.")
 
-    @app_commands.command(name="slowmode", description="Adjust channel ratelimit")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    async def slowmode(self, it: discord.Interaction, seconds: int):
-        await it.channel.edit(slowmode_delay=seconds)
-        await it.response.send_message(f"🐢 Slowmode updated to {seconds}s.", ephemeral=True)
-
-# --- INFORMATION COG ---
 class Information(commands.Cog):
     def __init__(self, bot: 'RDUBot'):
         self.bot = bot
 
-    @app_commands.command(name="server_status", description="Real-time Rust & Discord metrics")
-    async def server_status(self, it: discord.Interaction):
-        latency = round(self.bot.latency * 1000)
-        embed = EmbedFactory.create("📊 Server Status", "Current RDU Network Health")
-        embed.add_field(name="Discord Members", value=f"`{it.guild.member_count}`", inline=True)
-        embed.add_field(name="Rust Pop (Mock)", value="`142/200`", inline=True)
-        embed.add_field(name="API Latency", value=f"`{latency}ms`", inline=True)
-        
-        embed.color = Config.COLOR_SUCCESS if latency < 100 else Config.COLOR_WARNING
-        await it.response.send_message(embed=embed)
-
-    @app_commands.command(name="wipe_info", description="Next wipe schedule with local timestamps")
+    @app_commands.command(name="wipe_info", description="Get wipe schedule (Stored in Supabase)")
     async def wipe_info(self, it: discord.Interaction):
-        # Using Discord Timestamps ensures players see it in their own local time
-        # Example timestamp for a future Thursday
-        map_wipe = "<t:1712217600:F>" 
-        bp_wipe = "First Thursday of every month"
+        await it.response.defer()
+        unix_timestamp = await self.bot.db.get_config("next_wipe")
         
-        desc = f"📅 **Next Map Wipe:** {map_wipe}\n💀 **BP Wipe:** {bp_wipe}\n\n*Timestamps adjusted to your local timezone.*"
-        await it.response.send_message(embed=EmbedFactory.create("📅 Wipe Schedule", desc, Config.COLOR_WARNING))
+        # UI utilizes Discord's dynamic timestamp format <t:UNIX:F>
+        wipe_display = f"<t:{unix_timestamp}:F> (<t:{unix_timestamp}:R>)" if unix_timestamp else "Not Set"
+        
+        desc = f"📅 **Next Map Wipe:** {wipe_display}\n💀 **BP Wipe:** First Thursday of Month"
+        await it.followup.send(embed=EmbedFactory.build("📅 Wipe Schedule", desc, discord.Color.gold()))
 
-    @app_commands.command(name="user_info", description="Audit a user's account details")
+    @app_commands.command(name="user_info", description="Audit user account age and roles")
     async def user_info(self, it: discord.Interaction, member: discord.Member):
-        embed = EmbedFactory.create(f"Audit: {member.display_name}", f"ID: `{member.id}`")
-        embed.add_field(name="Created", value=f"<t:{int(member.created_at.timestamp())}:R>", inline=True)
-        embed.add_field(name="Joined", value=f"<t:{int(member.joined_at.timestamp())}:R>", inline=True)
+        embed = EmbedFactory.build(f"Audit: {member.display_name}", f"ID: `{member.id}`", thumb=member.display_avatar.url)
+        embed.add_field(name="Account Created", value=f"<t:{int(member.created_at.timestamp())}:D>", inline=True)
+        embed.add_field(name="Joined Server", value=f"<t:{int(member.joined_at.timestamp())}:R>", inline=True)
         embed.add_field(name="Top Role", value=member.top_role.mention, inline=False)
-        embed.set_thumbnail(url=member.display_avatar.url)
         await it.response.send_message(embed=embed)
 
-# --- UTILITY COG ---
 class Utility(commands.Cog):
     def __init__(self, bot: 'RDUBot'):
         self.bot = bot
 
-    @app_commands.command(name="poll", description="Create a simple binary poll")
-    async def poll(self, it: discord.Interaction, question: str):
-        embed = EmbedFactory.create("📊 Community Poll", question, discord.Color.purple())
-        embed.set_author(name=it.user.display_name, icon_url=it.user.display_avatar.url)
-        
-        await it.response.send_message("Poll deployed.", ephemeral=True)
-        msg = await it.channel.send(embed=embed)
-        await msg.add_reaction("✅")
-        await msg.add_reaction("❌")
-
-    @app_commands.command(name="ping", description="Check bot heartbeat")
+    @app_commands.command(name="ping", description="Network heartbeat")
     async def ping(self, it: discord.Interaction):
-        await it.response.send_message(f"🏓 Pong! `{round(self.bot.latency * 1000)}ms`", ephemeral=True)
+        latency = round(self.bot.latency * 1000)
+        color = discord.Color.green() if latency < 100 else discord.Color.red()
+        await it.response.send_message(embed=EmbedFactory.build("🏓 Pong!", f"Latency: **{latency}ms**", color))
 
-# --- CORE BOT ENGINE ---
+# --- CORE BOT ---
 class RDUBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
         super().__init__(command_prefix="!", intents=intents, help_command=None)
+        
+        # Initialize Supabase Layer
+        self.db = SupabaseManager()
 
     async def setup_hook(self):
         # Register Cogs
@@ -151,47 +134,35 @@ class RDUBot(commands.Bot):
         await self.add_cog(Information(self))
         await self.add_cog(Utility(self))
         
-        # Syncing Logic
-        if Config.GUILD_ID:
-            guild = discord.Object(id=Config.GUILD_ID)
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-            logger.info(f"Tree synced for Guild: {Config.GUILD_ID}")
-        else:
-            await self.tree.sync()
-            logger.info("Tree synced globally")
+        # Syncing
+        guild = discord.Object(id=Config.GUILD_ID)
+        self.tree.copy_global_to(guild=guild)
+        await self.tree.sync(guild=guild)
+        logger.info(f"Bot Tree Synced to {Config.GUILD_ID}")
 
-    async def log_action(self, guild: discord.Guild, embed: discord.Embed):
+    async def dispatch_log(self, guild: discord.Guild, embed: discord.Embed):
         channel = discord.utils.get(guild.text_channels, name=Config.LOG_CHANNEL_NAME)
         if channel:
             await channel.send(embed=embed)
 
     async def on_app_command_error(self, it: discord.Interaction, error: app_commands.AppCommandError):
         if isinstance(error, app_commands.MissingPermissions):
-            await it.response.send_message("❌ Insufficient permissions to execute this.", ephemeral=True)
-        elif isinstance(error, app_commands.CommandOnCooldown):
-            await it.response.send_message(f"⏳ On cooldown. Try again in {error.retry_after:.1f}s.", ephemeral=True)
+            await it.response.send_message("❌ You lack permissions for this.", ephemeral=True)
         else:
-            logger.error(f"Global Error: {error}")
-            if not it.response.is_done():
-                await it.response.send_message("⚠️ An internal execution error occurred.", ephemeral=True)
+            logger.error(f"Execution Error: {error}")
 
-# --- ENTRY POINT ---
+# --- BOOT ---
 async def main():
     bot = RDUBot()
-    
     if not Config.TOKEN:
-        logger.critical("FATAL: DISCORD_TOKEN is missing from environment.")
+        logger.critical("MISSING DISCORD_TOKEN.")
         return
-
-    try:
-        async with bot:
-            await bot.start(Config.TOKEN)
-    except Exception as e:
-        logger.error(f"Startup failed: {e}")
+    
+    async with bot:
+        await bot.start(Config.TOKEN)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Bot shutdown initiated by user.")
+        logger.info("Shutdown initiated.")
